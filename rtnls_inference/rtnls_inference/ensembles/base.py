@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import albumentations as A
@@ -67,7 +68,11 @@ class FundusEnsemble(Ensemble):
     ):
         dataset = FundusTestDataset(
             images_paths=image_paths,
-            transform=make_test_transform(self.config, preprocess=preprocess),
+            transform=make_test_transform(
+                self.config,
+                preprocess=preprocess,
+                contrast_enhance=len(image_paths[0]) == 1,
+            ),
         )
 
         batch_size = (
@@ -98,7 +103,7 @@ class FundusEnsemble(Ensemble):
         dataloader = self._make_dataloader(
             image_paths, num_workers=num_workers, preprocess=True, batch_size=batch_size
         )
-        self._predict_dataloader(dataloader, dest_path)
+        return self._predict_dataloader(dataloader, dest_path)
 
     def predict_preprocessed(
         self,
@@ -113,7 +118,7 @@ class FundusEnsemble(Ensemble):
             preprocess=False,
             batch_size=batch_size,
         )
-        self._predict_dataloader(dataloader, dest_path)
+        return self._predict_dataloader(dataloader, dest_path)
 
     def get_device(self):
         # Check if the module has any parameters
@@ -135,3 +140,16 @@ class FundusEnsemble(Ensemble):
 
         config = json.loads(extra_files["config.yaml"])
         return cls(ensemble, config)
+
+    @classmethod
+    def from_release(cls, fname: str):
+        if os.path.exists(fname):
+            fpath = fname
+        else:
+            fpath = os.path.join(os.environ["RTNLS_MODEL_RELEASES"], fname)
+
+        fpath = Path(fpath)
+        if fpath.suffix == ".pt":
+            return cls.from_torchscript(fpath)
+        else:
+            raise ValueError(f"Unrecognized extension {fpath.suffix}")

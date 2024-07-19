@@ -39,6 +39,7 @@ class SegmentationEnsemble(FundusEnsemble):
         return pred
 
     def sliding_window_inference(self, image):
+        print("here")
         patch_size = self.config["inference"].get("tracing_input_size", [512, 512])
         pred = sliding_window_inference(
             inputs=image,
@@ -86,9 +87,10 @@ class SegmentationEnsemble(FundusEnsemble):
                 # we make a pseudo-batch with the outputs and everything needed for undoing transforms
                 items = {
                     "id": batch["id"],
-                    "bounds": batch["bounds"],
                     "image": proba,
                 }
+                if "bounds" in items:
+                    items["bounds"] = batch["bounds"]
                 items = decollate_batch(items)
 
                 for i, item in enumerate(items):

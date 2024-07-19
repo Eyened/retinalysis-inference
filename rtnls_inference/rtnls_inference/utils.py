@@ -27,6 +27,20 @@ def move_batch_to_device(batch, device):
     }
 
 
+def find_batch_size(batch):
+    if isinstance(batch, torch.Tensor):
+        return batch.shape[0]
+    elif isinstance(batch, dict):
+        for v in batch.values():
+            size = find_batch_size(v)
+            if size is not None:
+                return size
+    elif isinstance(batch, list):
+        return len(batch)
+    else:
+        raise RuntimeError("Batch size not found")
+
+
 def decollate_batch(batch):
     """
     Separate batched PyTorch tensors in a nested dictionary into individual items and convert them to numpy or primitive types if the size is 1.
@@ -38,7 +52,7 @@ def decollate_batch(batch):
         list: A list of dictionaries, where each dictionary represents an item from the original batch.
     """
     # Number of items in the batch, assuming all tensors have the same batch size
-    batch_size = len(batch["image"])
+    batch_size = find_batch_size(batch)
 
     def convert(val):
         if isinstance(val, torch.Tensor):
@@ -70,3 +84,26 @@ def decollate_batch(batch):
     decollated = [recursive_decollate(batch, i) for i in range(batch_size)]
 
     return decollated
+
+
+def extract_keypoints_from_heatmaps(heatmaps):
+    batch_size, num_keypoints, _, _ = heatmaps.shape
+    keypoints = []
+    for b in range(batch_size):
+        elem_keypoints = []
+        for i in range(num_keypoints):
+            heatmap = heatmaps[b, i]
+            max_idx = torch.argmax(heatmap)
+
+            n_cols = heatmap.shape[1]
+            row = max_idx // n_cols
+            col = max_idx % n_cols
+
+            elem_keypoints.append(
+                [
+                    col.item(),
+                    row.item(),
+                ]
+            )
+        keypoints.append(elem_keypoints)
+    return torch.tensor(keypoints)
