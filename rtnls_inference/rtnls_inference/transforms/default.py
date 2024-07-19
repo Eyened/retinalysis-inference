@@ -84,7 +84,7 @@ class FundusTestTransform(TestTransform):
                 new_item["image"] = image
 
         if "keypoints" in item:
-            kp = (self.square_size) * item["keypoints"]
+            kp = (self.square_size / self.resize) * item["keypoints"]
             if do_preprocess:
                 bounds = Bounds.from_dict(item["bounds"])
                 M = bounds.get_cropping_matrix(self.square_size)

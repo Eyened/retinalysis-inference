@@ -39,7 +39,6 @@ class SegmentationEnsemble(FundusEnsemble):
         return pred
 
     def sliding_window_inference(self, image):
-        print("here")
         patch_size = self.config["inference"].get("tracing_input_size", [512, 512])
         pred = sliding_window_inference(
             inputs=image,

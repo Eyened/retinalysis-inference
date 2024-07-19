@@ -101,8 +101,8 @@ def extract_keypoints_from_heatmaps(heatmaps):
 
             elem_keypoints.append(
                 [
-                    col.item(),
-                    row.item(),
+                    col.item() + 0.5,
+                    row.item() + 0.5,
                 ]
             )
         keypoints.append(elem_keypoints)
