@@ -5,6 +5,8 @@ from pathlib import Path
 import albumentations as A
 import lightning as L
 import numpy as np
+import pandas as pd
+from rtnls_fundusprep.colors import contrast_enhance
 import torch
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import DataLoader
@@ -25,25 +27,24 @@ class FundusEnsemble(Ensemble):
         self,
         ensemble: L.LightningModule,
         config: dict,
-        preprocess: bool = True,
     ):
         super().__init__()
         self.ensemble = ensemble
         self.config = config
-        self.preprocess = preprocess
-        self.transform = make_test_transform(self.config)
+        # self.preprocess = preprocess
+        # self.transform = make_test_transform(self.config)
 
-        self.to_tensor = ToTensorV2()
-        self.normalize = A.Compose(
-            [
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=1,
-                )
-            ],
-            additional_targets={"ce": "image"},
-        )
+        # self.to_tensor = ToTensorV2()
+        # self.normalize = A.Compose(
+        #     [
+        #         A.Normalize(
+        #             mean=(0.485, 0.456, 0.406),
+        #             std=(0.229, 0.224, 0.225),
+        #             max_pixel_value=1,
+        #         )
+        #     ],
+        #     additional_targets={"ce": "image"},
+        # )
 
     def make_batch(self, images):
         batch = []
@@ -66,12 +67,13 @@ class FundusEnsemble(Ensemble):
         num_workers=8,
         ignore_exceptions=True,
     ):
+        contrast_enhance=isinstance(image_paths[0], str) or (len(image_paths[0]) == 1)
         dataset = FundusTestDataset(
             images_paths=image_paths,
             transform=make_test_transform(
                 self.config,
                 preprocess=preprocess,
-                contrast_enhance=len(image_paths[0]) == 1,
+                contrast_enhance = contrast_enhance,
             ),
         )
 
@@ -119,6 +121,21 @@ class FundusEnsemble(Ensemble):
             batch_size=batch_size,
         )
         return self._predict_dataloader(dataloader, dest_path)
+    
+    def predict_dataframe(
+        self,
+        df: pd.DataFrame,
+        dest_path=None,
+        image_path_column='image',
+        preprocess=True,
+        **kwargs
+    ):
+        image_paths = df[image_path_column].to_list()
+        if preprocess:
+            return self.predict(image_paths, dest_path, **kwargs)
+        else:
+            return self.predict_preprocessed(image_paths, dest_path, **kwargs)
+
 
     def get_device(self):
         # Check if the module has any parameters
@@ -153,3 +170,4 @@ class FundusEnsemble(Ensemble):
             return cls.from_torchscript(fpath)
         else:
             raise ValueError(f"Unrecognized extension {fpath.suffix}")
+        

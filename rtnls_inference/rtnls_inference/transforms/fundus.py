@@ -36,39 +36,7 @@ class FundusTestTransform(TestTransform):
             (self.square_size, self.square_size),
             interpolation=cv2.INTER_LINEAR,
         )
-
-    # def undo(self, batch, proba, preprocess=False):
-    #     proba = self.undo_resize(proba)
-    #     do_preprocess = preprocess if preprocess is not None else self.preprocess
-    #     if not do_preprocess:
-    #         return proba
-
-    #     unprep = []
-
-    #     for i in range(batch["image"].shape[0]):
-    #         bounds = Bounds.from_dict(extract_bound(batch["bounds"], i))
-    #         M = bounds.get_cropping_matrix(self.square_size)
-    #         im = proba[i, ...].squeeze()
-    #         unprep.append(M.warp_inverse(im, (bounds.h, bounds.w)))
-
-    #     return unprep
-
-    # def undo_keypoints(self, batch, kp, preprocess=False):
-    #     kp = (self.square_size) * kp
-
-    #     do_preprocess = preprocess if preprocess is not None else self.preprocess
-    #     if not do_preprocess:
-    #         return kp
-
-    #     unprep = []
-
-    #     for i in range(batch["image"].shape[0]):
-    #         bounds = Bounds.from_dict(extract_bound(batch["bounds"], i))
-    #         M = bounds.get_cropping_matrix(self.square_size)
-    #         im_kp = kp[i, ...]
-    #         unprep.append(M.apply_inverse(im_kp, (bounds.h, bounds.w)))
-
-    #     return np.stack(unprep)
+        
 
     def undo_item(self, item, preprocess=False):
         do_preprocess = preprocess if preprocess is not None else self.preprocess
