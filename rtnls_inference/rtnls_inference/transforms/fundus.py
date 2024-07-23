@@ -28,6 +28,7 @@ class FundusTestTransform(TestTransform):
         self.transform = A.Compose(
             [A.Resize(resize, resize)],
             additional_targets={"ce": "image"},
+            keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
         )
 
     def undo_resize(self, proba):
