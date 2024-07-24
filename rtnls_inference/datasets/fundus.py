@@ -5,7 +5,8 @@ from pathlib import Path
 import albumentations as A
 import numpy as np
 from albumentations.pytorch import ToTensorV2
-from rtnls_utils.data_loading import load_image
+
+from rtnls_inference.utils import load_image
 
 from .base import TestDataset
 
@@ -67,6 +68,7 @@ class FundusTestDataset(TestDataset):
         item = {
             "id": self.get_id(idx),
             "image": image,
+            "keypoints": [],  # expected by albumentations
         }
         if ce is not None:
             item["ce"] = ce

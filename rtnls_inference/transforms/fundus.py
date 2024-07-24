@@ -1,6 +1,7 @@
 import albumentations as A
 import cv2
 import torch
+
 from rtnls_fundusprep.mask_extraction import Bounds, extract_bounds
 from rtnls_fundusprep.preprocessor import FundusPreprocessor, contrast_enhance
 
@@ -37,7 +38,6 @@ class FundusTestTransform(TestTransform):
             (self.square_size, self.square_size),
             interpolation=cv2.INTER_LINEAR,
         )
-        
 
     def undo_item(self, item, preprocess=False):
         do_preprocess = preprocess if preprocess is not None else self.preprocess

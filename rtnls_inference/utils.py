@@ -1,4 +1,10 @@
+from pathlib import Path
+from typing import Union
+
+import numpy as np
+import pydicom
 import torch
+from PIL import Image
 
 
 def test_collate_fn(batch):
@@ -107,3 +113,26 @@ def extract_keypoints_from_heatmaps(heatmaps):
             )
         keypoints.append(elem_keypoints)
     return torch.tensor(keypoints)
+
+
+def load_image_pil(path: Union[Path, str]):
+    if isinstance(path, str):
+        path = Path(path)
+    if path.suffix == ".dcm":
+        ds = pydicom.read_file(str(path))
+        img = Image.fromarray(ds.pixel_array)
+    else:
+        img = Image.open(str(path))
+    return img
+
+
+def load_image(path: Union[Path, str], dtype: Union[np.uint8, np.float32] = np.uint8):
+    if Path(path).suffix == ".npy":
+        im = np.load(path)
+    else:
+        im = np.array(load_image_pil(path), dtype=np.uint8)
+    if im.dtype == np.uint8 and dtype == np.float32:
+        im = (im / 255).astype(np.float32)
+    if im.dtype == np.float32 and dtype == np.uint8:
+        im = np.round(im * 255).astype(np.uint8)
+    return im
