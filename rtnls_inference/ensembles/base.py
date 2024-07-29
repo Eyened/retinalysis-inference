@@ -10,9 +10,11 @@ from torch.utils.data import DataLoader
 
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
+    normalizer,
+    to_tensor,
 )
 from rtnls_inference.transforms import make_test_transform
-from rtnls_inference.utils import test_collate_fn
+from rtnls_inference.utils import decollate_batch, test_collate_fn
 
 
 class Ensemble(L.LightningModule):
@@ -49,15 +51,19 @@ class Ensemble(L.LightningModule):
 
 
 class FundusEnsemble(Ensemble):
-    def make_batch(self, images):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transform = make_test_transform(self.config)
+
+    def make_batch(self, images, preprocess=False):
         batch = []
         for image in images:
             item = {"image": image, "keypoints": []}
-            item = self.transform(**item, preprocess=self.preprocess)
-            item = self.normalize(**item)
+            item = self.transform(**item, preprocess=preprocess)
+            item = normalizer(**item)
             if "ce" in item:
                 item["image"] = np.concatenate([item["image"], item.pop("ce")], axis=-1)
-            item = self.to_tensor(**item)
+            item = to_tensor(**item)
             batch.append(item)
 
         return test_collate_fn(batch)
@@ -154,3 +160,21 @@ class FundusEnsemble(Ensemble):
             # and hence might not have a clear device assignment.
             # Adjust this part based on your specific needs.
             return torch.device("cpu")
+
+    def predict_batch(self, batch):
+        pass
+
+    def _predict_batch(self, batch):
+        items = self.predict_batch(batch)
+        if "bounds" in items:
+            items["bounds"] = batch["bounds"]
+        items = decollate_batch(items)
+        items = [self.transform.undo_item(item) for item in items]
+        return items
+
+    def predict_images(self, images, preprocess=False):
+        """Input: list of numpy images of potentially different shapes"""
+        batch = self.make_batch(images, preprocess=preprocess)
+        items = self._predict_batch(batch)
+
+        return items

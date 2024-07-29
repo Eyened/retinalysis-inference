@@ -8,7 +8,6 @@ from PIL import Image
 from tqdm import tqdm
 
 from rtnls_inference.ensembles.utils import EnsembleSplitter
-from rtnls_inference.utils import decollate_batch
 
 from .base import FundusEnsemble
 
@@ -56,11 +55,19 @@ class SegmentationEnsemble(FundusEnsemble):
         )
         return torch.stack(pred)  # MNCHW
 
-    def predict_images(self, images):
-        batch = self.make_batch(images)
-        proba = self.forward(batch)
-        proba = self.transform.undo(batch, proba, preprocess=self.preprocess)
-        return proba
+    def predict_batch(self, batch):
+        with torch.autocast(device_type=self.get_device().type):
+            proba = self.forward(batch["image"].to(self.get_device()))
+        proba = torch.mean(proba, dim=0)  # average over models
+        proba = torch.permute(proba, (0, 2, 3, 1))  # NCHW -> NHWC
+        proba = torch.nn.functional.softmax(proba, dim=-1)
+
+        # we make a pseudo-batch with the outputs and everything needed for undoing transforms
+        items = {
+            "id": batch["id"],
+            "image": proba,
+        }
+        return items
 
     def _save_item(self, item: dict, dest_path: str | Path):
         mask = np.argmax(item["image"], -1)
@@ -74,22 +81,8 @@ class SegmentationEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                with torch.autocast(device_type=self.get_device().type):
-                    proba = self.forward(batch["image"].to(self.get_device()))
-                proba = torch.mean(proba, dim=0)  # average over models
-                proba = torch.permute(proba, (0, 2, 3, 1))  # NCHW -> NHWC
-                proba = torch.nn.functional.softmax(proba, dim=-1)
-
-                # we make a pseudo-batch with the outputs and everything needed for undoing transforms
-                items = {
-                    "id": batch["id"],
-                    "image": proba,
-                }
-                if "bounds" in items:
-                    items["bounds"] = batch["bounds"]
-                items = decollate_batch(items)
+                items = self._predict_batch(batch)
 
                 for i, item in enumerate(items):
-                    item = dataloader.dataset.transform.undo_item(item)
                     fpath = os.path.join(dest_path, f'{item["id"]}.png')
                     self._save_item(item, fpath)

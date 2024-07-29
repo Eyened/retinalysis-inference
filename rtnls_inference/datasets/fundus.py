@@ -19,6 +19,8 @@ normalizer = A.Compose(
     additional_targets={"ce": "image"},
 )
 
+to_tensor = ToTensorV2()
+
 
 class FundusTestDataset(TestDataset):
     def __init__(
@@ -31,7 +33,6 @@ class FundusTestDataset(TestDataset):
     ):
         self.image_paths = images_paths
         self.transform = transform
-        self.to_tensor = ToTensorV2()
         self.normalize = normalizer if normalize else lambda **x: x
 
         self.ignore_exceptions = ignore_exceptions
@@ -82,7 +83,7 @@ class FundusTestDataset(TestDataset):
         if "ce" in item:
             item["image"] = np.concatenate([item["image"], item.pop("ce")], axis=-1)
 
-        item = self.to_tensor(**item)
+        item = to_tensor(**item)
 
         return item
 
