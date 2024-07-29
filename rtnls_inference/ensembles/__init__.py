@@ -3,7 +3,6 @@ from pathlib import Path
 
 import torch
 
-from retinalysis.rtnls_inference.rtnls_inference.utils import find_release_file
 from rtnls_inference.ensembles.base import Ensemble
 from rtnls_inference.ensembles.ensemble_classification import (  # noqa: F401
     ClassificationEnsemble,
@@ -18,7 +17,7 @@ from rtnls_inference.ensembles.ensemble_regression import (
 from rtnls_inference.ensembles.ensemble_segmentation import (  # noqa: F401
     SegmentationEnsemble,
 )
-from rtnls_inference.utils import get_all_subclasses_dict
+from rtnls_inference.utils import find_release_file, get_all_subclasses_dict
 
 name_to_ensemble = get_all_subclasses_dict(Ensemble)
 

@@ -134,3 +134,15 @@ def load_image(path: Union[Path, str], dtype: Union[np.uint8, np.float32] = np.u
     if im.dtype == np.float32 and dtype == np.uint8:
         im = np.round(im * 255).astype(np.uint8)
     return im
+
+
+def find_release_file(release_path: str | Path) -> Path:
+    if not isinstance(release_path, Path):
+        release_path = Path(release_path)
+
+    assert not bool(release_path.suffix), "release_path should not have a suffix"
+
+    if release_path.with_suffix(".pt").exists():
+        return release_path.with_suffix(".pt")
+    else:
+        raise ValueError(f"No release file found for relase path {release_path}")
