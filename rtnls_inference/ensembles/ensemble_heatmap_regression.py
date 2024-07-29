@@ -4,6 +4,7 @@ from monai.inferers import sliding_window_inference
 from tqdm import tqdm
 
 from rtnls_inference.ensembles.base import FundusEnsemble
+from rtnls_inference.ensembles.utils import EnsembleSplitter
 from rtnls_inference.utils import decollate_batch, extract_keypoints_from_heatmaps
 
 from .base import FundusEnsemble
@@ -15,6 +16,7 @@ def flip(data, axis):
 
 class HeatmapRegressionEnsemble(FundusEnsemble):
     def forward(self, img):
+        """Returns output tensor with shape MNCHW where M=nfolds, the number of models"""
         tta = self.config["inference"].get("tta", False)
         if tta:
             return self.tta_inference(img)
@@ -22,25 +24,29 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
             return self.sliding_window_inference(img)
 
     def tta_inference(self, img):
-        tta_flips = self.config["inference"].get("tta_flips", [[3]])
+        tta_flips = self.config["inference"].get("tta_flips", [[2], [3], [2, 3]])
         pred = self.sliding_window_inference(img)
         for flip_idx in tta_flips:
-            pred += flip(self.sliding_window_inference(flip(img, flip_idx)), flip_idx)
+            flip_undo_idx = [e + 1 for e in flip_idx]  # output has extra first dim M
+            pred += flip(
+                self.sliding_window_inference(flip(img, flip_idx)), flip_undo_idx
+            )
         pred /= len(tta_flips) + 1
-        return pred
+        return pred  # MNCHW
 
     def sliding_window_inference(self, image):
         patch_size = self.config["inference"].get("tracing_input_size", [512, 512])
+        model = EnsembleSplitter(self.ensemble)
         pred = sliding_window_inference(
             inputs=image,
             roi_size=patch_size,
             sw_batch_size=1,
-            predictor=self.ensemble,
+            predictor=model,
             overlap=self.config["inference"].get("overlap", 0.5),
             mode=self.config["inference"].get("blend", "gaussian"),
             device=torch.device("cpu"),
         )
-        return pred
+        return torch.stack(pred)  # MNCHW
 
     def _predict_dataloader(self, dataloader, dest_path=None):
         with torch.no_grad():
@@ -54,6 +60,7 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
                     heatmap = self.forward(batch["image"].to(self.get_device()))
                 keypoints = extract_keypoints_from_heatmaps(heatmap)
 
+                keypoints = torch.mean(keypoints, dim=0)  # average over models
                 # we make a pseudo-batch with the outputs and everything needed for undoing transforms
                 items = {
                     "id": batch["id"],

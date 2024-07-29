@@ -93,26 +93,24 @@ def decollate_batch(batch):
 
 
 def extract_keypoints_from_heatmaps(heatmaps):
-    batch_size, num_keypoints, _, _ = heatmaps.shape
-    keypoints = []
-    for b in range(batch_size):
-        elem_keypoints = []
-        for i in range(num_keypoints):
-            heatmap = heatmaps[b, i]
-            max_idx = torch.argmax(heatmap)
+    """Input shape: MNCHW (n_models, batch_size, num_keypoints, height, width)
+    Output shape: MNC2
+    """
+    n_models, batch_size, num_keypoints, _, _ = heatmaps.shape
+    outputs = torch.zeros(n_models, batch_size, num_keypoints, 2, dtype=torch.float32)
 
-            n_cols = heatmap.shape[1]
-            row = max_idx // n_cols
-            col = max_idx % n_cols
+    for m in range(n_models):
+        for b in range(batch_size):
+            for i in range(num_keypoints):
+                heatmap = heatmaps[m, b, i]
+                max_idx = torch.argmax(heatmap)
 
-            elem_keypoints.append(
-                [
-                    col.item() + 0.5,
-                    row.item() + 0.5,
-                ]
-            )
-        keypoints.append(elem_keypoints)
-    return torch.tensor(keypoints)
+                n_cols = heatmap.shape[1]
+                row = max_idx // n_cols
+                col = max_idx % n_cols
+
+                outputs[m, b, i] = torch.tensor([col.item() + 0.5, row.item() + 0.5])
+    return outputs
 
 
 def load_image_pil(path: Union[Path, str]):
