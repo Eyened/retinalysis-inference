@@ -95,4 +95,6 @@ class FundusTestDataset(TestDataset):
                 warnings.warn(f"Exception with image {self.get_id(idx)}: {ex}")
                 return None
             else:
-                raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex
+                # raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex
+                print(f"Exception with image {self.get_id(idx)}: {ex}")
+                return None
