@@ -2,7 +2,7 @@
 
 This repository implements inference ensembles for retinalysis model releases. It includes the same pre-processing code that was used to train the models. For example, fundus preprocessing will detect bounds, crop the smalles square that contains these bounds, and resize it to a fixed resolution, currently 1024x1024px.
 
-- VascX models are available in the [huggingface repository](https://huggingface.co/Eyened/vascx). See [this notebook](./notebooks/inference.ipynb).
+- VascX models are available in [this huggingface repository](https://huggingface.co/Eyened/vascx) but don't need to be downloaded manually. See [this notebook](./notebooks/inference.ipynb).
 
 Models have been tested to run on a single nvidia GPU with at least 10GB VRAM. Using them for distributed inference in multiple GPUs will require some adaptation.
 
