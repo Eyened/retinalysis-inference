@@ -21,11 +21,11 @@ We did not include torch as a dependency of rtnls-inference. These must be insta
 2. Install rtnls_fundusprep and rtnls-inference:
 
 ```
-git clone git@github.com:Eyened/retinalysis-fundusprep.git rtnls_fundusprep
+git clone https://github.com/Eyened/retinalysis-fundusprep.git rtnls_fundusprep
 cd rtnls_fundusprep
 pip install -e .
 
-git clone git@github.com:Eyened/retinalysis-inference.git rtnls_inference
+git clone https://github.com/Eyened/retinalysis-inference.git rtnls_inference
 cd rtnls_inference
 pip install -e .
 ```
