@@ -2,6 +2,8 @@
 
 This repository implements inference ensembles for retinalysis model releases. It includes the same pre-processing code that was used to train the models. For example, fundus preprocessing will detect bounds, crop the smalles square that contains these bounds, and resize it to a fixed resolution, currently 1024x1024px.
 
+- VascX models are available in the [huggingface repository](https://huggingface.co/Eyened/vascx). See [this notebook](./notebooks/inference.ipynb).
+
 Models have been tested to run on a single nvidia GPU with at least 10GB VRAM. Using them for distributed inference in multiple GPUs will require some adaptation.
 
 ### Installation
@@ -21,18 +23,18 @@ We did not include torch as a dependency of rtnls-inference. These must be insta
 2. Install rtnls_fundusprep and rtnls-inference:
 
 ```
-git clone git@github.com:Eyened/retinalysis-fundusprep.git rtnls_fundusprep
+git clone https://github.com/Eyened/retinalysis-fundusprep.git rtnls_fundusprep
 cd rtnls_fundusprep
 pip install -e .
 
-git clone git@github.com:Eyened/retinalysis-inference.git rtnls_inference
+git clone https://github.com/Eyened/retinalysis-inference.git rtnls_inference
 cd rtnls_inference
 pip install -e .
 ```
 
-3. Done! You can now import and use rtnls-inference ensembles. See [this notebook](./notebooks/inference.ipynb) for examples.
+3. Done! You can now download and use rtnls-inference ensembles. See [this notebook](./notebooks/inference.ipynb) for an example. The models are automatically downloaded from huggingface.
 
-4. (optional) To be able to load models by name from a folder define:
+4. (optional) To be able to load manually-downloaded models by name from a folder define:
 
 ```
 export RTNLS_MODEL_RELEASES = /path/to/models

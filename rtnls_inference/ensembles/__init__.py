@@ -38,4 +38,4 @@ def make_ensemble(release_path: str | Path) -> Ensemble:
     ensemble = torch.jit.load(release_file, _extra_files=extra_files).eval()
     config = json.loads(extra_files["config.yaml"])
     ensemble_class = get_ensemble_class(config)
-    return ensemble_class(ensemble, config)
+    return ensemble_class(ensemble, config, release_path)

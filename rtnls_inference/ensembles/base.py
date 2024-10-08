@@ -15,6 +15,7 @@ from rtnls_inference.datasets.fundus import (
 )
 from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import decollate_batch, test_collate_fn
+from huggingface_hub import HfApi, hf_hub_download
 
 
 class Ensemble(L.LightningModule):
@@ -22,10 +23,12 @@ class Ensemble(L.LightningModule):
         self,
         ensemble: L.LightningModule,
         config: dict,
+        fpath: Path | str = None
     ):
         super().__init__()
         self.ensemble = ensemble
         self.config = config
+        self.fpath = fpath
 
     @classmethod
     def from_torchscript(cls, fpath: str | Path):
@@ -34,7 +37,7 @@ class Ensemble(L.LightningModule):
         ensemble = torch.jit.load(fpath, _extra_files=extra_files).eval()
 
         config = json.loads(extra_files["config.yaml"])
-        return cls(ensemble, config)
+        return cls(ensemble, config, fpath)
 
     @classmethod
     def from_release(cls, fname: str):
@@ -48,6 +51,31 @@ class Ensemble(L.LightningModule):
             return cls.from_torchscript(fpath)
         else:
             raise ValueError(f"Unrecognized extension {fpath.suffix}")
+        
+    @classmethod
+    def from_huggingface(cls, modelstr: str):
+        repo_name, repo_fpath = modelstr.split(':')
+        fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
+        return cls.from_torchscript(fpath)
+    
+    def hf_upload(self):
+        ''' Upload self.fpath to huggingface
+        '''
+        api = HfApi()
+        assert 'huggingface' in self.config, 'config must have a huggingface key with huggingface details.'
+        fpath = self.fpath
+        if not Path(fpath).suffix:
+            fpath += '.pt'
+        repo_id = self.config['huggingface']['repo']
+        repo_path = self.config['huggingface']['path'] + '/' + self.config['name'] + '.pt'
+        print(f'Uploading file {fpath} to huggingface: {repo_id}:{repo_path}')
+        api.upload_file(
+            path_or_fileobj=fpath,
+            path_in_repo=repo_path,
+            repo_id=repo_id,
+            repo_type="model",
+        )
+
 
 
 class FundusEnsemble(Ensemble):

@@ -47,7 +47,7 @@ class SegmentationEnsemble(FundusEnsemble):
         pred = sliding_window_inference(
             inputs=image,
             roi_size=patch_size,
-            sw_batch_size=1,
+            sw_batch_size=16,
             predictor=model,
             overlap=self.config["inference"].get("overlap", 0.5),
             mode=self.config["inference"].get("blend", "gaussian"),
