@@ -2,8 +2,8 @@ import albumentations as A
 import cv2
 import torch
 
-from rtnls_fundusprep.mask_extraction import Bounds, extract_bounds
-from rtnls_fundusprep.preprocessor import FundusPreprocessor, contrast_enhance
+from rtnls_fundusprep.mask_extraction import CFIBounds as Bounds, get_cfi_bounds
+from rtnls_fundusprep.preprocessor import FundusPreprocessor
 
 from .base import TestTransform
 
@@ -71,20 +71,17 @@ class FundusTestTransform(TestTransform):
         do_preprocess = preprocess if preprocess is not None else self.preprocess
         if do_preprocess:
             # we preprocess without contrast enhance
+            # to add more logic to this part
             item = self.prep_function(**item)
 
         if self.contrast_enhance:
-            # if the bounds are available
+            # if the bounds of the original (non-cropped) image are available
             if "bounds" in item:
-                M = item["bounds"].get_cropping_matrix(self.square_size)
-                bounds = item["bounds"].warp(M, (self.square_size, self.square_size))
-            else:  # else we compute the bounds
-                bounds = extract_bounds(item["image"])
-            mask = bounds.make_binary_mask(0.01 * bounds.radius)
-            mirrored = bounds.background_mirroring(item["image"])
-            sigma = 0.05 * bounds.radius
+                _, bounds = item["bounds"].crop(self.square_size)
+            else:  # else we compute the bounds of the provided image
+                bounds = get_cfi_bounds(item["image"])
 
-            item["ce"] = contrast_enhance(mirrored, mask, sigma)
+            item["ce"] = bounds.contrast_enhanced_5
 
         # serialize the bounds
         # cannot pass arbitrary objects to the dataloader
