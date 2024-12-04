@@ -16,16 +16,10 @@ def softmax(logits):
 
 
 class RegressionEnsemble(FundusEnsemble):
-    def forward(self, batch):
-        all_preds = []
-        with torch.no_grad():
-            batch = move_batch_to_device(batch, self.get_device())
-            for model_i, model in enumerate(self.models):
-                all_preds.append(model.predict_step(batch).cpu().detach().numpy())
 
-        mean_preds = np.sum(all_preds, axis=0) / len(all_preds)
-
-        return mean_preds
+    def forward(self, img):
+        """Returns output tensor with shape MN where M=nfolds, the number of models"""
+        return self.ensemble(img).cpu().detach()
 
     def predict_step(self, batch):
         return self.forward(batch)
@@ -36,17 +30,15 @@ class RegressionEnsemble(FundusEnsemble):
         return proba
 
     def _predict_dataloader(self, dataloader, dest_path):
-        if not os.path.exists(dest_path):
-            os.makedirs(dest_path)
+        with torch.no_grad():
+            batch_ids = []
+            for batch in tqdm(dataloader):
+                if len(batch) == 0:
+                    continue
 
-        batch_ids = []
-        for batch in tqdm(dataloader):
-            if len(batch) == 0:
-                continue
-
-            preds = self.predict_step(batch)
-            batch_ids.extend(batch["id"])
-            preds.append(preds)
+                preds = self.forward(batch["image"].to(self.get_device()))
+                batch_ids.extend(batch["id"])
+                preds.append(preds)
 
         preds = np.concatenate(preds, axis=0)
         return pd.DataFrame(

@@ -99,7 +99,9 @@ class FundusEnsemble(Ensemble):
     def _make_dataloader(
         self,
         image_paths,
-        preprocess,
+        bounds=None,
+        ids=None,
+        preprocess=True,
         batch_size=None,
         num_workers=8,
         ignore_exceptions=True,
@@ -108,14 +110,18 @@ class FundusEnsemble(Ensemble):
             isinstance(image_paths[0], str)
             or isinstance(image_paths[0], Path)
             or (len(image_paths[0]) == 1)
-        )
+        ) if self.config['datamodule']['test_transform'].get('contrast_enhance', True) else False
+        
         dataset = FundusTestDataset(
             images_paths=image_paths,
+            bounds=bounds,
+            ids=ids,
             transform=make_test_transform(
                 self.config,
                 preprocess=preprocess,
                 contrast_enhance=contrast_enhance,
             ),
+            ignore_exceptions=True
         )
 
         batch_size = (
@@ -139,24 +145,28 @@ class FundusEnsemble(Ensemble):
     def predict(
         self,
         image_paths,
+        bounds=None,
+        ids=None,
         dest_path=None,
         num_workers=0,
         batch_size=None,
     ):
         dataloader = self._make_dataloader(
-            image_paths, num_workers=num_workers, preprocess=True, batch_size=batch_size
+            image_paths, bounds=bounds, ids=ids, num_workers=num_workers, preprocess=True, batch_size=batch_size
         )
         return self._predict_dataloader(dataloader, dest_path)
 
     def predict_preprocessed(
         self,
         image_paths,
+        ids=None,
         dest_path=None,
         num_workers=0,
         batch_size=None,
     ):
         dataloader = self._make_dataloader(
             image_paths,
+            ids=ids,
             num_workers=num_workers,
             preprocess=False,
             batch_size=batch_size,
