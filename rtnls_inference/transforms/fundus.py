@@ -39,14 +39,14 @@ class FundusTestTransform(TestTransform):
             interpolation=cv2.INTER_LINEAR,
         )
 
-    def undo_item(self, item, preprocess=False):
+    def undo_item(self, item, preprocess=None):
         do_preprocess = preprocess if preprocess is not None else self.preprocess
 
         new_item = {**item}
         if "image" in item:
             image = self.undo_resize(item["image"])
             if do_preprocess:
-                bounds = Bounds.from_dict(item["bounds"])
+                bounds = Bounds(**item["bounds"])
                 M = bounds.get_cropping_matrix(self.square_size)
                 new_item["image"] = M.warp_inverse(image, (bounds.h, bounds.w))
             else:
@@ -55,9 +55,9 @@ class FundusTestTransform(TestTransform):
         if "keypoints" in item:
             kp = (self.square_size / self.resize) * item["keypoints"]
             if do_preprocess:
-                bounds = Bounds.from_dict(item["bounds"])
+                bounds = Bounds(**item["bounds"])
                 M = bounds.get_cropping_matrix(self.square_size)
-                new_item["keypoints"] = M.apply_inverse(kp, (bounds.h, bounds.w))
+                new_item["keypoints"] = M.apply_inverse(kp)
             else:
                 new_item["keypoints"] = kp
         return new_item
@@ -73,6 +73,7 @@ class FundusTestTransform(TestTransform):
             # we preprocess without contrast enhance
             # to add more logic to this part
             item = self.prep_function(**item)
+            
 
         if self.contrast_enhance:
             # if the bounds of the original (non-cropped) image are available

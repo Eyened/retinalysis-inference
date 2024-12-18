@@ -37,6 +37,7 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
     def sliding_window_inference(self, image):
         patch_size = self.config["inference"].get("tracing_input_size", [512, 512])
         model = EnsembleSplitter(self.ensemble)
+
         pred = sliding_window_inference(
             inputs=image,
             roi_size=patch_size,
@@ -66,7 +67,7 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
                     "id": batch["id"],
                     "keypoints": keypoints,
                 }
-                if "bounds" in items:
+                if "bounds" in batch:
                     items["bounds"] = batch["bounds"]
                 items = decollate_batch(items)
 

@@ -67,6 +67,8 @@ class SegmentationEnsemble(FundusEnsemble):
             "id": batch["id"],
             "image": proba,
         }
+        if 'bounds' in batch:
+            items['bounds'] = batch['bounds']
         return items
 
     def _save_item(self, item: dict, dest_path: str | Path):
