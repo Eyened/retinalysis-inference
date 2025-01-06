@@ -1,19 +1,17 @@
-from typing import TYPE_CHECKING, Dict, List
 import warnings
 from math import floor, log10
 from pathlib import Path
+from typing import Dict, List
 
 import albumentations as A
 import numpy as np
 from albumentations.pytorch import ToTensorV2
 
-
-from rtnls_fundusprep.mask_extraction import Bounds
+from rtnls_fundusprep.cfi_bounds import CFIBounds
+from rtnls_inference.transforms.base import TestTransform
 from rtnls_inference.utils import load_image
 
 from .base import TestDataset
-
-from rtnls_inference.transforms.base import TestTransform
 
 normalizer = A.Compose(
     [
@@ -31,10 +29,10 @@ class FundusTestDataset(TestDataset):
     def __init__(
         self,
         images_paths: List[str | Path],
-        bounds: List[Dict]=None,
-        transform: TestTransform =None,
-        normalize: bool=True,
-        ignore_exceptions: bool=False,
+        bounds: List[Dict] = None,
+        transform: TestTransform = None,
+        normalize: bool = True,
+        ignore_exceptions: bool = False,
         ids: List[str] = None,
         **kwargs,
     ):
@@ -87,7 +85,7 @@ class FundusTestDataset(TestDataset):
             item["ce"] = ce
 
         if self.bounds is not None:
-            item['bounds'] = Bounds(**self.bounds[idx])
+            item["bounds"] = CFIBounds(**self.bounds[idx])
 
         if self.transform is not None:
             item = self.transform(**item)

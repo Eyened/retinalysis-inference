@@ -13,7 +13,7 @@ class ClassificationEnsemble(RegressionEnsemble):
             if len(batch) == 0:
                 continue
 
-            batch_preds = self.predict_step(batch)
+            batch_preds = self.predict_step(batch["image"])
             batch_preds = dataloader.dataset.transform.undo_keypoints(
                 batch, batch_preds
             )
