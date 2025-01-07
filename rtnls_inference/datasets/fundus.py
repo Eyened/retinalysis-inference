@@ -1,4 +1,3 @@
-import warnings
 from math import floor, log10
 from pathlib import Path
 from typing import Dict, List
@@ -53,13 +52,13 @@ class FundusTestDataset(TestDataset):
         fp = self.image_paths[idx]
         if isinstance(fp, list) or isinstance(fp, tuple):
             if len(fp) == 1:
-                return load_image(fp[0], np.float32), None
+                return load_image(fp[0]), None
             elif len(fp) == 2:
-                return load_image(fp[0], np.float32), load_image(fp[1], np.float32)
+                return load_image(fp[0]), load_image(fp[1])
             else:
                 raise ValueError(f"Invalid image paths {fp}")
         else:
-            return load_image(fp, np.float32), None
+            return load_image(fp), None
 
     def get_id(self, idx):
         if self.ids is not None:
@@ -101,11 +100,12 @@ class FundusTestDataset(TestDataset):
         return item
 
     def __getitem__(self, idx):
-        try:
-            return self.getitem(idx, normalize=True)
-        except Exception as ex:
-            if self.ignore_exceptions:
-                warnings.warn(f"Exception with image {self.get_id(idx)}: {ex}")
-                return None
-            else:
-                raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex
+        # try:
+        return self.getitem(idx, normalize=True)
+
+    # except Exception as ex:
+    #     if self.ignore_exceptions:
+    #         warnings.warn(f"Exception with image {self.get_id(idx)}: {ex}")
+    #         return None
+    #     else:
+    #         raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex

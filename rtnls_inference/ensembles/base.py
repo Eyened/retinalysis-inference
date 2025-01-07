@@ -6,6 +6,7 @@ import lightning as L
 import numpy as np
 import pandas as pd
 import torch
+from huggingface_hub import HfApi, hf_hub_download
 from torch.utils.data import DataLoader
 
 from rtnls_inference.datasets.fundus import (
@@ -15,15 +16,11 @@ from rtnls_inference.datasets.fundus import (
 )
 from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import decollate_batch, test_collate_fn
-from huggingface_hub import HfApi, hf_hub_download
 
 
 class Ensemble(L.LightningModule):
     def __init__(
-        self,
-        ensemble: L.LightningModule,
-        config: dict,
-        fpath: Path | str = None
+        self, ensemble: L.LightningModule, config: dict, fpath: Path | str = None
     ):
         super().__init__()
         self.ensemble = ensemble
@@ -51,31 +48,33 @@ class Ensemble(L.LightningModule):
             return cls.from_torchscript(fpath)
         else:
             raise ValueError(f"Unrecognized extension {fpath.suffix}")
-        
+
     @classmethod
     def from_huggingface(cls, modelstr: str):
-        repo_name, repo_fpath = modelstr.split(':')
+        repo_name, repo_fpath = modelstr.split(":")
         fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
         return cls.from_torchscript(fpath)
-    
+
     def hf_upload(self):
-        ''' Upload self.fpath to huggingface
-        '''
+        """Upload self.fpath to huggingface"""
         api = HfApi()
-        assert 'huggingface' in self.config, 'config must have a huggingface key with huggingface details.'
+        assert (
+            "huggingface" in self.config
+        ), "config must have a huggingface key with huggingface details."
         fpath = self.fpath
         if not Path(fpath).suffix:
-            fpath += '.pt'
-        repo_id = self.config['huggingface']['repo']
-        repo_path = self.config['huggingface']['path'] + '/' + self.config['name'] + '.pt'
-        print(f'Uploading file {fpath} to huggingface: {repo_id}:{repo_path}')
+            fpath += ".pt"
+        repo_id = self.config["huggingface"]["repo"]
+        repo_path = (
+            self.config["huggingface"]["path"] + "/" + self.config["name"] + ".pt"
+        )
+        print(f"Uploading file {fpath} to huggingface: {repo_id}:{repo_path}")
         api.upload_file(
             path_or_fileobj=fpath,
             path_in_repo=repo_path,
             repo_id=repo_id,
             repo_type="model",
         )
-
 
 
 class FundusEnsemble(Ensemble):
@@ -107,11 +106,15 @@ class FundusEnsemble(Ensemble):
         ignore_exceptions=True,
     ):
         contrast_enhance = (
-            isinstance(image_paths[0], str)
-            or isinstance(image_paths[0], Path)
-            or (len(image_paths[0]) == 1)
-        ) if self.config['datamodule']['test_transform'].get('contrast_enhance', True) else False
-        
+            (
+                isinstance(image_paths[0], str)
+                or isinstance(image_paths[0], Path)
+                or (len(image_paths[0]) == 1)
+            )
+            if self.config["datamodule"]["test_transform"].get("contrast_enhance", True)
+            else False
+        )
+
         dataset = FundusTestDataset(
             images_paths=image_paths,
             bounds=bounds,
@@ -121,7 +124,7 @@ class FundusEnsemble(Ensemble):
                 preprocess=preprocess,
                 contrast_enhance=contrast_enhance,
             ),
-            ignore_exceptions=True
+            ignore_exceptions=True,
         )
 
         batch_size = (
@@ -152,7 +155,12 @@ class FundusEnsemble(Ensemble):
         batch_size=None,
     ):
         dataloader = self._make_dataloader(
-            image_paths, bounds=bounds, ids=ids, num_workers=num_workers, preprocess=True, batch_size=batch_size
+            image_paths,
+            bounds=bounds,
+            ids=ids,
+            num_workers=num_workers,
+            preprocess=True,
+            batch_size=batch_size,
         )
         return self._predict_dataloader(dataloader, dest_path)
 
@@ -203,9 +211,11 @@ class FundusEnsemble(Ensemble):
         pass
 
     def _predict_batch(self, batch):
+        print(batch)
         items = self.predict_batch(batch)
         if "bounds" in items:
             items["bounds"] = batch["bounds"]
+        print(items)
         items = decollate_batch(items)
         items = [self.transform.undo_item(item) for item in items]
         return items
