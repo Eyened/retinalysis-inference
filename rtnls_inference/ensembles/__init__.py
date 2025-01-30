@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -39,3 +40,7 @@ def make_ensemble(release_path: str | Path) -> Ensemble:
     config = json.loads(extra_files["config.yaml"])
     ensemble_class = get_ensemble_class(config)
     return ensemble_class(ensemble, config, release_path)
+
+
+def make_ensemble_name(release_name: str | Path) -> Ensemble:
+    return make_ensemble(os.path.join(os.environ["RTNLS_MODEL_RELEASES"], release_name))

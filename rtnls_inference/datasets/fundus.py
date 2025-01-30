@@ -1,3 +1,4 @@
+import warnings
 from math import floor, log10
 from pathlib import Path
 from typing import Dict, List
@@ -100,12 +101,12 @@ class FundusTestDataset(TestDataset):
         return item
 
     def __getitem__(self, idx):
-        # try:
-        return self.getitem(idx, normalize=True)
+        try:
+            return self.getitem(idx, normalize=True)
 
-    # except Exception as ex:
-    #     if self.ignore_exceptions:
-    #         warnings.warn(f"Exception with image {self.get_id(idx)}: {ex}")
-    #         return None
-    #     else:
-    #         raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex
+        except Exception as ex:
+            if self.ignore_exceptions:
+                warnings.warn(f"Exception with image {self.get_id(idx)}: {ex}")
+                return None
+            else:
+                raise RuntimeError(f"Exception with image {self.get_id(idx)}") from ex

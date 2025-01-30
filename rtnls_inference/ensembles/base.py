@@ -15,7 +15,7 @@ from rtnls_inference.datasets.fundus import (
     to_tensor,
 )
 from rtnls_inference.transforms import make_test_transform
-from rtnls_inference.utils import decollate_batch, test_collate_fn
+from rtnls_inference.utils import test_collate_fn
 
 
 class Ensemble(L.LightningModule):
@@ -58,9 +58,9 @@ class Ensemble(L.LightningModule):
     def hf_upload(self):
         """Upload self.fpath to huggingface"""
         api = HfApi()
-        assert (
-            "huggingface" in self.config
-        ), "config must have a huggingface key with huggingface details."
+        assert "huggingface" in self.config, (
+            "config must have a huggingface key with huggingface details."
+        )
         fpath = self.fpath
         if not Path(fpath).suffix:
             fpath += ".pt"
@@ -95,7 +95,16 @@ class FundusEnsemble(Ensemble):
 
         return test_collate_fn(batch)
 
-    def _make_dataloader(
+    def _make_test_dataloader(
+        self, dataframe_path: str | Path, base_path: str | Path = None
+    ):
+        from rtnls_models.data_loading.dm_dataframe import DataframeDataModule
+
+        dm = DataframeDataModule.from_path(dataframe_path, base_path)
+        dm.setup()
+        return dm.test_dataloader()
+
+    def _make_inference_dataloader(
         self,
         image_paths,
         bounds=None,
@@ -154,7 +163,7 @@ class FundusEnsemble(Ensemble):
         num_workers=0,
         batch_size=None,
     ):
-        dataloader = self._make_dataloader(
+        dataloader = self._make_inference_dataloader(
             image_paths,
             bounds=bounds,
             ids=ids,
@@ -172,7 +181,7 @@ class FundusEnsemble(Ensemble):
         num_workers=0,
         batch_size=None,
     ):
-        dataloader = self._make_dataloader(
+        dataloader = self._make_inference_dataloader(
             image_paths,
             ids=ids,
             num_workers=num_workers,
@@ -209,16 +218,6 @@ class FundusEnsemble(Ensemble):
 
     def predict_batch(self, batch):
         pass
-
-    def _predict_batch(self, batch):
-        print(batch)
-        items = self.predict_batch(batch)
-        if "bounds" in items:
-            items["bounds"] = batch["bounds"]
-        print(items)
-        items = decollate_batch(items)
-        items = [self.transform.undo_item(item) for item in items]
-        return items
 
     def predict_images(self, images, preprocess=False):
         """Input: list of numpy images of potentially different shapes"""

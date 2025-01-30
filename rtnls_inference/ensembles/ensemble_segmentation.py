@@ -5,9 +5,12 @@ import numpy as np
 import torch
 from monai.inferers import sliding_window_inference
 from PIL import Image
+from pytorch_lightning.utilities import move_data_to_device
 from tqdm import tqdm
 
 from rtnls_inference.ensembles.utils import EnsembleSplitter
+from rtnls_inference.metrics import Dice
+from rtnls_inference.utils import decollate_batch
 
 from .base import FundusEnsemble
 
@@ -22,6 +25,10 @@ def flip(data, axis):
 
 
 class SegmentationEnsemble(FundusEnsemble):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dice = Dice(self.config["lightningmodule"].get("n_class", 2))
+
     def forward(self, img):
         """Returns output tensor with shape MNCHW where M=nfolds, the number of models"""
         tta = self.config["inference"].get("tta", False)
@@ -29,6 +36,14 @@ class SegmentationEnsemble(FundusEnsemble):
             return self.tta_inference(img)
         else:
             return self.sliding_window_inference(img)
+
+    def predict_step(self, batch, batch_idx=None):
+        """Returns the output averaged over models, shape NHWC"""
+        proba = self.forward(batch["image"])
+        proba = torch.mean(proba, dim=0)  # average over models
+        proba = torch.permute(proba, (0, 2, 3, 1))  # NCHW -> NHWC
+        proba = torch.nn.functional.softmax(proba, dim=-1)
+        return proba
 
     def tta_inference(self, img):
         tta_flips = self.config["inference"].get("tta_flips", [[2], [3], [2, 3]])
@@ -51,24 +66,22 @@ class SegmentationEnsemble(FundusEnsemble):
             predictor=model,
             overlap=self.config["inference"].get("overlap", 0.5),
             mode=self.config["inference"].get("blend", "gaussian"),
-            device=torch.device("cpu"),
+            # device=torch.device("cpu"),
         )
         return torch.stack(pred)  # MNCHW
 
     def predict_batch(self, batch):
-        with torch.autocast(device_type=self.get_device().type):
-            proba = self.forward(batch["image"].to(self.get_device()))
-        proba = torch.mean(proba, dim=0)  # average over models
-        proba = torch.permute(proba, (0, 2, 3, 1))  # NCHW -> NHWC
-        proba = torch.nn.functional.softmax(proba, dim=-1)
+        proba = self.predict_step(batch)
 
         # we make a pseudo-batch with the outputs and everything needed for undoing transforms
         items = {
             "id": batch["id"],
             "image": proba,
         }
-        if 'bounds' in batch:
-            items['bounds'] = batch['bounds']
+        if "bounds" in batch:
+            items["bounds"] = batch["bounds"]
+        items = decollate_batch(items)
+        items = [self.transform.undo_item(item) for item in items]
         return items
 
     def _save_item(self, item: dict, dest_path: str | Path):
@@ -83,8 +96,23 @@ class SegmentationEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                items = self._predict_batch(batch)
+                with torch.autocast(device_type=self.get_device().type):
+                    batch = move_data_to_device(batch, self.get_device())
+                    items = self.predict_batch(batch)
 
                 for i, item in enumerate(items):
-                    fpath = os.path.join(dest_path, f'{item["id"]}.png')
+                    fpath = os.path.join(dest_path, f"{item['id']}.png")
                     self._save_item(item, fpath)
+
+    def test_step(self, batch, batch_idx):
+        proba = self.forward(batch["image"])
+        proba = torch.mean(proba, dim=0)  # average over models, NCHW
+
+        mask = batch["masks"][..., 1][:, None, :, :] == 0
+        lbl = batch["masks"][..., 0][:, None, :, :]
+
+        # shapes: BNHWD
+        metrics, _ = self.dice(proba, lbl[:, 0], mask[:, 0], 0)
+        self.log_dict(
+            {f"C{i}": v for i, v in enumerate(metrics)}, on_step=False, on_epoch=True
+        )
