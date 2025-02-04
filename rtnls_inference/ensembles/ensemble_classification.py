@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import torch
 from tqdm import tqdm
 
 from .ensemble_regression import RegressionEnsemble
@@ -7,21 +8,25 @@ from .ensemble_regression import RegressionEnsemble
 
 class ClassificationEnsemble(RegressionEnsemble):
     def _predict_dataloader(self, dataloader, dest_path):
-        ids = []
-        preds = []
-        for batch in tqdm(dataloader):
-            if len(batch) == 0:
-                continue
+        with torch.no_grad():
+            batch_ids = []
+            batch_preds = []
+            for batch in tqdm(dataloader):
+                if len(batch) == 0:
+                    continue
 
-            batch_preds = self.predict_step(batch["image"])
-            batch_preds = dataloader.dataset.transform.undo_keypoints(
-                batch, batch_preds
-            )
-            ids.extend(batch["id"])
-            preds.append(batch_preds)
+                logits = self.forward(
+                    batch["image"].to(self.get_device())
+                )  # shape: MNC
 
-        preds = np.concatenate(preds, axis=0)
+                logits = torch.mean(logits, dim=0)
+                # proba = torch.nn.functional.softmax(torch.mean(logits, dim=0), dim=-1)
+
+                batch_ids.extend(batch["id"])
+                batch_preds.append(logits.numpy())
+
+        batch_preds = np.concatenate(batch_preds, axis=0)
         return pd.DataFrame(
-            preds,
-            index=ids,
+            batch_preds,
+            index=batch_ids,
         )
