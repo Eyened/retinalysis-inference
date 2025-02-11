@@ -47,7 +47,7 @@ class FundusTestTransform(TestTransform):
             image = self.undo_resize(item["image"])
             if do_preprocess:
                 bounds = Bounds(**item["bounds"])
-                M = bounds.get_cropping_matrix(self.square_size)
+                M, bounds_cropped = bounds.crop(self.square_size)
                 new_item["image"] = M.warp_inverse(image, (bounds.h, bounds.w))
             else:
                 new_item["image"] = image
@@ -56,7 +56,7 @@ class FundusTestTransform(TestTransform):
             kp = (self.square_size / self.resize) * item["keypoints"]
             if do_preprocess:
                 bounds = Bounds(**item["bounds"])
-                M = bounds.get_cropping_matrix(self.square_size)
+                M, bounds_cropped = bounds.crop(self.square_size)
                 new_item["keypoints"] = M.apply_inverse(kp)
             else:
                 new_item["keypoints"] = kp
