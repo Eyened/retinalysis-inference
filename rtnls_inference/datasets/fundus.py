@@ -41,6 +41,7 @@ class FundusTestDataset(TestDataset):
             assert len(bounds) == len(images_paths)
         self.bounds = bounds
         self.transform = transform
+        self.to_float = A.Compose([A.ToFloat()], additional_targets={"ce": "image"})
         self.normalize = normalizer if normalize else lambda **x: x
 
         self.ignore_exceptions = ignore_exceptions
@@ -89,6 +90,8 @@ class FundusTestDataset(TestDataset):
 
         if self.transform is not None:
             item = self.transform(**item)
+
+        item = self.to_float(**item)
 
         if normalize:
             item = self.normalize(**item)
