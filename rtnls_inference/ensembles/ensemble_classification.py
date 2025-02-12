@@ -19,11 +19,11 @@ class ClassificationEnsemble(RegressionEnsemble):
                     batch["image"].to(self.get_device())
                 )  # shape: MNC
 
-                logits = torch.mean(logits, dim=0)
-                # proba = torch.nn.functional.softmax(torch.mean(logits, dim=0), dim=-1)
+                proba = torch.nn.functional.softmax(logits, dim=-1)
+                proba = torch.mean(proba, dim=0)  # average over models
 
                 batch_ids.extend(batch["id"])
-                batch_preds.append(logits.numpy())
+                batch_preds.append(proba.numpy())
 
         batch_preds = np.concatenate(batch_preds, axis=0)
         return pd.DataFrame(
