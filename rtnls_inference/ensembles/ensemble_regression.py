@@ -19,11 +19,6 @@ class RegressionEnsemble(FundusEnsemble):
     def predict_step(self, batch):
         return self.forward(batch)
 
-    def predict_images(self, images):
-        batch = self.make_batch(images)
-        proba = self.predict_step(batch)
-        return proba
-
     def _predict_dataloader(self, dataloader, dest_path):
         with torch.no_grad():
             batch_ids = []

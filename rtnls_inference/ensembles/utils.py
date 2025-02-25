@@ -21,5 +21,6 @@ class EnsembleSplitter(nn.Module):
         self.ensemble = ensemble
 
     def forward(self, x):
-        res = torch.unbind(self.ensemble(x), dim=0)
-        return res
+        x = self.ensemble(x)
+        x = torch.unbind(x, dim=0)
+        return x

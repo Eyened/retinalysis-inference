@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 import lightning as L
-import numpy as np
 import pandas as pd
 import torch
 from huggingface_hub import HfApi, hf_hub_download
@@ -11,8 +10,6 @@ from torch.utils.data import DataLoader
 
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
-    normalizer,
-    to_tensor,
 )
 from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import test_collate_fn
@@ -28,16 +25,16 @@ class Ensemble(L.LightningModule):
         self.fpath = fpath
 
     @classmethod
-    def from_torchscript(cls, fpath: str | Path):
+    def from_torchscript(cls, fpath: str | Path, **kwargs):
         extra_files = {"config.yaml": ""}  # values will be replaced with data
 
         ensemble = torch.jit.load(fpath, _extra_files=extra_files).eval()
 
         config = json.loads(extra_files["config.yaml"])
-        return cls(ensemble, config, fpath)
+        return cls(ensemble, config, fpath, **kwargs)
 
     @classmethod
-    def from_release(cls, fname: str):
+    def from_release(cls, fname: str, **kwargs):
         if os.path.exists(fname):
             fpath = fname
         else:
@@ -45,15 +42,15 @@ class Ensemble(L.LightningModule):
 
         fpath = Path(fpath)
         if fpath.suffix == ".pt":
-            return cls.from_torchscript(fpath)
+            return cls.from_torchscript(fpath, **kwargs)
         else:
             raise ValueError(f"Unrecognized extension {fpath.suffix}")
 
     @classmethod
-    def from_huggingface(cls, modelstr: str):
+    def from_huggingface(cls, modelstr: str, **kwargs):
         repo_name, repo_fpath = modelstr.split(":")
         fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
-        return cls.from_torchscript(fpath)
+        return cls.from_torchscript(fpath, **kwargs)
 
     def hf_upload(self):
         """Upload self.fpath to huggingface"""
@@ -80,20 +77,6 @@ class Ensemble(L.LightningModule):
 class FundusEnsemble(Ensemble):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.transform = make_test_transform(self.config)
-
-    def make_batch(self, images, preprocess=False):
-        batch = []
-        for image in images:
-            item = {"image": image, "keypoints": []}
-            item = self.transform(**item, preprocess=preprocess)
-            item = normalizer(**item)
-            if "ce" in item:
-                item["image"] = np.concatenate([item["image"], item.pop("ce")], axis=-1)
-            item = to_tensor(**item)
-            batch.append(item)
-
-        return test_collate_fn(batch)
 
     def _make_test_dataloader(
         self, dataframe_path: str | Path, base_path: str | Path = None
@@ -218,10 +201,3 @@ class FundusEnsemble(Ensemble):
 
     def predict_batch(self, batch):
         pass
-
-    def predict_images(self, images, preprocess=False):
-        """Input: list of numpy images of potentially different shapes"""
-        batch = self.make_batch(images, preprocess=preprocess)
-        items = self._predict_batch(batch)
-
-        return items

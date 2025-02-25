@@ -25,9 +25,9 @@ def flip(data, axis):
 
 
 class SegmentationEnsemble(FundusEnsemble):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, postprocess_fn=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dice = Dice(self.config["lightningmodule"].get("n_class", 2))
+        self.postprocess_fn = postprocess_fn
 
     def forward(self, img):
         """Returns output tensor with shape MNCHW where M=nfolds, the number of models"""
@@ -68,25 +68,35 @@ class SegmentationEnsemble(FundusEnsemble):
             mode=self.config["inference"].get("blend", "gaussian"),
             # device=torch.device("cpu"),
         )
-        return torch.stack(pred)  # MNCHW
+        if isinstance(pred, list):
+            pred = torch.stack(pred)
 
-    def predict_batch(self, batch):
-        proba = self.predict_step(batch)
+        if pred.dim() == 4:
+            pred = pred[None, ...]
 
-        # we make a pseudo-batch with the outputs and everything needed for undoing transforms
-        items = {
-            "id": batch["id"],
-            "image": proba,
-        }
-        if "bounds" in batch:
-            items["bounds"] = batch["bounds"]
-        items = decollate_batch(items)
-        items = [self.transform.undo_item(item) for item in items]
-        return items
+        return pred  # MNCHW
+
+    # def predict_batch(self, batch):
+    #     proba = self.predict_step(batch)
+
+    #     # we make a pseudo-batch with the outputs and everything needed for undoing transforms
+    #     items = {
+    #         "id": batch["id"],
+    #         "image": proba,
+    #     }
+    #     if "bounds" in batch:
+    #         items["bounds"] = batch["bounds"]
+    #     items = decollate_batch(items)
+    #     items = [self.transform.undo_item(item) for item in items]
+    #     return items
 
     def _save_item(self, item: dict, dest_path: str | Path):
         mask = np.argmax(item["image"], -1)
-        Image.fromarray(mask.squeeze().astype(np.uint8)).save(dest_path)
+        mask = mask.squeeze().astype(np.uint8)
+        if self.postprocess_fn is not None:
+            mask = self.postprocess_fn(mask)
+
+        Image.fromarray(mask).save(dest_path)
 
     def _predict_dataloader(self, dataloader, dest_path):
         if not os.path.exists(dest_path):
@@ -98,11 +108,23 @@ class SegmentationEnsemble(FundusEnsemble):
 
                 with torch.autocast(device_type=self.get_device().type):
                     batch = move_data_to_device(batch, self.get_device())
-                    items = self.predict_batch(batch)
+                    proba = self.predict_step(batch)
+
+                items = {
+                    "id": batch["id"],
+                    "image": proba,
+                }
+                if "bounds" in batch:
+                    items["bounds"] = batch["bounds"]
+                items = decollate_batch(items)
+                items = [dataloader.dataset.transform.undo_item(item) for item in items]
 
                 for i, item in enumerate(items):
                     fpath = os.path.join(dest_path, f"{item['id']}.png")
                     self._save_item(item, fpath)
+
+    def on_test_start(self):
+        self.dice = Dice(self.config["lightningmodule"].get("n_class", 2))
 
     def test_step(self, batch, batch_idx):
         proba = self.forward(batch["image"])
