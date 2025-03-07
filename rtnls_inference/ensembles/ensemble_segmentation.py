@@ -68,7 +68,7 @@ class SegmentationEnsemble(FundusEnsemble):
             mode=self.config["inference"].get("blend", "gaussian"),
             # device=torch.device("cpu"),
         )
-        if isinstance(pred, list):
+        if isinstance(pred, tuple):
             pred = torch.stack(pred)
 
         if pred.dim() == 4:
