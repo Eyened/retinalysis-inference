@@ -6,13 +6,13 @@ import lightning as L
 import pandas as pd
 import torch
 from huggingface_hub import HfApi, hf_hub_download
-from rtnls_models.data_loading.utils import collate_except_metadata
 from torch.utils.data import DataLoader
 
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
 )
 from rtnls_inference.transforms import make_test_transform
+from rtnls_inference.utils import collate_except_metadata
 
 
 class Ensemble(L.LightningModule):

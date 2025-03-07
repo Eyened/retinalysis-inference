@@ -44,6 +44,18 @@ def remove_empty_lists(d):
         return d
 
 
+def collate_except_metadata(batch):
+    collated = {}
+    for key in batch[0].keys():
+        if key == "metadata":
+            collated[key] = [item[key] for item in batch]
+        else:
+            collated[key] = torch.utils.data.default_collate(
+                [item[key] for item in batch]
+            )
+    return collated
+
+
 def decollate_batch(batch):
     """
     Separate batched PyTorch tensors in a nested dictionary into individual items and convert them to numpy or primitive types if the size is 1.
