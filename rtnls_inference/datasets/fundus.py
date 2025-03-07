@@ -7,7 +7,6 @@ import albumentations as A
 import numpy as np
 from albumentations.pytorch import ToTensorV2
 
-from rtnls_fundusprep.cfi_bounds import CFIBounds
 from rtnls_inference.transforms.base import TestTransform
 from rtnls_inference.utils import load_image
 
@@ -86,7 +85,7 @@ class FundusTestDataset(TestDataset):
             item["ce"] = ce
 
         if self.bounds is not None:
-            item["bounds"] = CFIBounds(**self.bounds[idx])
+            item["metadata"] = {"bounds": self.bounds[idx]}
 
         if self.transform is not None:
             item = self.transform(**item)

@@ -33,18 +33,15 @@ def move_batch_to_device(batch, device):
     }
 
 
-def find_batch_size(batch):
-    if isinstance(batch, torch.Tensor):
-        return batch.shape[0]
-    elif isinstance(batch, dict):
-        for v in batch.values():
-            size = find_batch_size(v)
-            if size is not None:
-                return size
-    elif isinstance(batch, list):
-        return len(batch)
+def remove_empty_lists(d):
+    if isinstance(d, dict):
+        return {
+            k: remove_empty_lists(v)
+            for k, v in d.items()
+            if not (isinstance(v, (list, torch.Tensor)) and len(v) == 0)
+        }
     else:
-        raise RuntimeError("Batch size not found")
+        return d
 
 
 def decollate_batch(batch):
@@ -58,7 +55,16 @@ def decollate_batch(batch):
         list: A list of dictionaries, where each dictionary represents an item from the original batch.
     """
     # Number of items in the batch, assuming all tensors have the same batch size
-    batch_size = find_batch_size(batch)
+
+    assert "id" in batch, "Batch must contain an 'id' key to use decollate_batch"
+    batch_size = len(batch["id"])
+
+    # remove batch elements with zero length
+    batch = remove_empty_lists(batch)
+
+    if "metadata" in batch:
+        metadata = batch["metadata"]
+        del batch["metadata"]
 
     def convert(val):
         if isinstance(val, torch.Tensor):
@@ -88,6 +94,10 @@ def decollate_batch(batch):
 
     # Decollate the batch
     decollated = [recursive_decollate(batch, i) for i in range(batch_size)]
+
+    # attach the metadata
+    for i, item in enumerate(decollated):
+        item["metadata"] = metadata[i]
 
     return decollated
 

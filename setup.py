@@ -28,7 +28,7 @@ setup(
         "albumentations==1.3.1",
         "PyYAML>=5.4",
         "monai==1.2.0",
-        "huggingface-hub==0.25.1"
+        "huggingface-hub==0.25.1",
     ],
-    python_requires=">=3.10",
+    python_requires=">=3.10, <3.11",
 )

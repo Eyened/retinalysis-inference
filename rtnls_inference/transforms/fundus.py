@@ -2,7 +2,8 @@ import albumentations as A
 import cv2
 import torch
 
-from rtnls_fundusprep.mask_extraction import CFIBounds as Bounds, get_cfi_bounds
+from rtnls_fundusprep.mask_extraction import CFIBounds as Bounds
+from rtnls_fundusprep.mask_extraction import get_cfi_bounds
 from rtnls_fundusprep.preprocessor import FundusPreprocessor
 
 from .base import TestTransform
@@ -46,7 +47,7 @@ class FundusTestTransform(TestTransform):
         if "image" in item:
             image = self.undo_resize(item["image"])
             if do_preprocess:
-                bounds = Bounds(**item["bounds"])
+                bounds = Bounds(**item["metadata"]["bounds"])
                 M = bounds.get_cropping_matrix(self.square_size)
                 new_item["image"] = M.warp_inverse(image, (bounds.h, bounds.w))
             else:
@@ -55,7 +56,7 @@ class FundusTestTransform(TestTransform):
         if "keypoints" in item:
             kp = (self.square_size / self.resize) * item["keypoints"]
             if do_preprocess:
-                bounds = Bounds(**item["bounds"])
+                bounds = Bounds(**item["metadata"]["bounds"])
                 M = bounds.get_cropping_matrix(self.square_size)
                 new_item["keypoints"] = M.apply_inverse(kp)
             else:
@@ -73,12 +74,11 @@ class FundusTestTransform(TestTransform):
             # we preprocess without contrast enhance
             # to add more logic to this part
             item = self.prep_function(**item)
-            
 
         if self.contrast_enhance:
             # if the bounds of the original (non-cropped) image are available
-            if "bounds" in item:
-                _, bounds = item["bounds"].crop(self.square_size)
+            if "bounds" in item["metadata"]:
+                _, bounds = Bounds(**item["metadata"]["bounds"]).crop(self.square_size)
             else:  # else we compute the bounds of the provided image
                 bounds = get_cfi_bounds(item["image"])
 
@@ -86,8 +86,8 @@ class FundusTestTransform(TestTransform):
 
         # serialize the bounds
         # cannot pass arbitrary objects to the dataloader
-        if "bounds" in item:
-            item["bounds"] = item["bounds"].to_dict()
+        # if "bounds" in item:
+        #     item["metadata"]["bounds"] = item["bounds"].to_dict()
 
         item = self.transform(**item)
         return item

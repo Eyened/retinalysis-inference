@@ -6,13 +6,13 @@ import lightning as L
 import pandas as pd
 import torch
 from huggingface_hub import HfApi, hf_hub_download
+from rtnls_models.data_loading.utils import collate_except_metadata
 from torch.utils.data import DataLoader
 
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
 )
 from rtnls_inference.transforms import make_test_transform
-from rtnls_inference.utils import test_collate_fn
 
 
 class Ensemble(L.LightningModule):
@@ -130,7 +130,7 @@ class FundusEnsemble(Ensemble):
             pin_memory=False,
             shuffle=False,
             collate_fn=(
-                test_collate_fn
+                collate_except_metadata
                 if ignore_exceptions
                 else torch.utils.data.dataloader.default_collate
             ),
