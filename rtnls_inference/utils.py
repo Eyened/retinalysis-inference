@@ -77,6 +77,8 @@ def decollate_batch(batch):
     if "metadata" in batch:
         metadata = batch["metadata"]
         del batch["metadata"]
+    else:
+        metadata = [{} for _ in range(batch_size)]
 
     def convert(val):
         if isinstance(val, torch.Tensor):

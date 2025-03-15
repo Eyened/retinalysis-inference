@@ -84,8 +84,9 @@ class FundusTestDataset(TestDataset):
         if ce is not None:
             item["ce"] = ce
 
-        if self.bounds is not None:
-            item["metadata"] = {"bounds": self.bounds[idx]}
+        item["metadata"] = (
+            {"bounds": self.bounds[idx]} if self.bounds is not None else {}
+        )
 
         if self.transform is not None:
             item = self.transform(**item)
