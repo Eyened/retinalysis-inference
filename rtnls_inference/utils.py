@@ -94,10 +94,11 @@ def decollate_batch(batch):
             return val
 
     # Recursive function to decollate nested dictionaries and lists
-    def recursive_decollate(batch, index):
+    def recursive_decollate(batch, index, key):
         if isinstance(batch, dict):
             return {
-                key: recursive_decollate(value, index) for key, value in batch.items()
+                key: recursive_decollate(value, index, key)
+                for key, value in batch.items()
             }
         elif isinstance(batch, list):
             return convert(batch[index])
@@ -107,7 +108,7 @@ def decollate_batch(batch):
             return batch
 
     # Decollate the batch
-    decollated = [recursive_decollate(batch, i) for i in range(batch_size)]
+    decollated = [recursive_decollate(batch, i, None) for i in range(batch_size)]
 
     # attach the metadata
     for i, item in enumerate(decollated):
@@ -117,23 +118,23 @@ def decollate_batch(batch):
 
 
 def extract_keypoints_from_heatmaps(heatmaps):
-    """Input shape: MNCHW (n_models, batch_size, num_keypoints, height, width)
-    Output shape: MNC2
+    """Input shape: NMCHW (n_models, batch_size, num_keypoints, height, width)
+    Output shape: NMC2
     """
-    n_models, batch_size, num_keypoints, _, _ = heatmaps.shape
-    outputs = torch.zeros(n_models, batch_size, num_keypoints, 2, dtype=torch.float32)
+    batch_size, n_models, num_keypoints, _, _ = heatmaps.shape
+    outputs = torch.zeros(batch_size, n_models, num_keypoints, 2, dtype=torch.float32)
 
-    for m in range(n_models):
-        for b in range(batch_size):
+    for b in range(batch_size):
+        for m in range(n_models):
             for i in range(num_keypoints):
-                heatmap = heatmaps[m, b, i]
+                heatmap = heatmaps[b, m, i]
                 max_idx = torch.argmax(heatmap)
 
                 n_cols = heatmap.shape[1]
                 row = max_idx // n_cols
                 col = max_idx % n_cols
 
-                outputs[m, b, i] = torch.tensor([col.item() + 0.5, row.item() + 0.5])
+                outputs[b, m, i] = torch.tensor([col.item() + 0.5, row.item() + 0.5])
     return outputs
 
 

@@ -52,6 +52,13 @@ class Ensemble(L.LightningModule):
         fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
         return cls.from_torchscript(fpath, **kwargs)
 
+    @classmethod
+    def from_modelstring(cls, modelstr: str, **kwargs):
+        if modelstr.startswith("hf@"):
+            return cls.from_huggingface(modelstr[3:], **kwargs)
+        else:
+            return cls.from_release(modelstr, **kwargs)
+
     def hf_upload(self):
         """Upload self.fpath to huggingface"""
         api = HfApi()

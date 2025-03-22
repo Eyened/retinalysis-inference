@@ -69,12 +69,12 @@ class SegmentationEnsemble(FundusEnsemble):
             # device=torch.device("cpu"),
         )
         if isinstance(pred, tuple):
-            pred = torch.stack(pred)
+            pred = torch.stack(pred, dim=1)
 
         if pred.dim() == 4:
-            pred = pred[None, ...]
+            pred = pred[:, None, ...]
 
-        return pred  # MNCHW
+        return pred  # NMCHW
 
     # def predict_batch(self, batch):
     #     proba = self.predict_step(batch)

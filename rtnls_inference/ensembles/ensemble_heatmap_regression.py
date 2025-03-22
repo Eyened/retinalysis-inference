@@ -45,9 +45,14 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
             predictor=model,
             overlap=self.config["inference"].get("overlap", 0.5),
             mode=self.config["inference"].get("blend", "gaussian"),
-            device=torch.device("cpu"),
         )
-        return torch.stack(pred)  # MNCHW
+        if isinstance(pred, tuple):
+            pred = torch.stack(pred, dim=1)
+
+        if pred.dim() == 4:
+            pred = pred[:, None, ...]
+
+        return pred  # NMCHW
 
     def _predict_dataloader(self, dataloader, dest_path=None):
         with torch.no_grad():
