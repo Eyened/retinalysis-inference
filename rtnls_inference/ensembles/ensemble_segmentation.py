@@ -40,7 +40,7 @@ class SegmentationEnsemble(FundusEnsemble):
     def predict_step(self, batch, batch_idx=None):
         """Returns the output averaged over models, shape NHWC"""
         proba = self.forward(batch["image"])
-        proba = torch.mean(proba, dim=0)  # average over models
+        proba = torch.mean(proba, dim=1)  # average over models
         proba = torch.permute(proba, (0, 2, 3, 1))  # NCHW -> NHWC
         proba = torch.nn.functional.softmax(proba, dim=-1)
         return proba

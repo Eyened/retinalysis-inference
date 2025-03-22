@@ -66,7 +66,7 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
                     heatmap = self.forward(batch["image"].to(self.get_device()))
                 keypoints = extract_keypoints_from_heatmaps(heatmap)
 
-                keypoints = torch.mean(keypoints, dim=0)  # average over models
+                keypoints = torch.mean(keypoints, dim=1)  # average over models
                 # we make a pseudo-batch with the outputs and everything needed for undoing transforms
                 items = {
                     "id": batch["id"],
