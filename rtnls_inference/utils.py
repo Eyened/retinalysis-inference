@@ -77,7 +77,9 @@ def decollate_batch(batch):
     if "metadata" in batch:
         metadata = batch["metadata"]
         del batch["metadata"]
-
+    else:
+        metadata = None
+        
     def convert(val):
         if isinstance(val, torch.Tensor):
             decollated_val = val.detach().cpu().numpy()
@@ -108,8 +110,9 @@ def decollate_batch(batch):
     decollated = [recursive_decollate(batch, i) for i in range(batch_size)]
 
     # attach the metadata
-    for i, item in enumerate(decollated):
-        item["metadata"] = metadata[i]
+    if metadata is not None:
+        for i, item in enumerate(decollated):
+            item["metadata"] = metadata[i]
 
     return decollated
 

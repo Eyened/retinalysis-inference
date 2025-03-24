@@ -47,8 +47,8 @@ class FundusTestTransform(TestTransform):
         if "image" in item:
             image = self.undo_resize(item["image"])
             if do_preprocess:
-                bounds = Bounds(**item["metadata"]["bounds"])
-                M = bounds.get_cropping_matrix(self.square_size)
+                bounds = Bounds(image=item["image"], **item["metadata"]["bounds"])
+                M = bounds.get_cropping_transform(self.square_size)
                 new_item["image"] = M.warp_inverse(image, (bounds.h, bounds.w))
             else:
                 new_item["image"] = image
@@ -57,7 +57,7 @@ class FundusTestTransform(TestTransform):
             kp = (self.square_size / self.resize) * item["keypoints"]
             if do_preprocess:
                 bounds = Bounds(**item["metadata"]["bounds"])
-                M = bounds.get_cropping_matrix(self.square_size)
+                M = bounds.get_cropping_transform(self.square_size)
                 new_item["keypoints"] = M.apply_inverse(kp)
             else:
                 new_item["keypoints"] = kp
@@ -78,7 +78,7 @@ class FundusTestTransform(TestTransform):
         if self.contrast_enhance:
             # if the bounds of the original (non-cropped) image are available
             if "bounds" in item["metadata"]:
-                _, bounds = Bounds(**item["metadata"]["bounds"]).crop(self.square_size)
+                _, bounds = Bounds(image=item["image"], **item["metadata"]["bounds"]).crop(self.square_size)
             else:  # else we compute the bounds of the provided image
                 bounds = get_cfi_bounds(item["image"])
 
