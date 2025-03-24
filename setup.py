@@ -20,7 +20,7 @@ setup(
         "pandas == 2.*",
         "opencv-python == 4.*",
         "joblib==1.*",
-        "Pillow == 9.*",
+        "Pillow == 11.*",
         "click==8.*",
         "pydicom==2.3.1",
         "nbstripout==0.3.9",
@@ -29,6 +29,8 @@ setup(
         "PyYAML>=5.4",
         "monai==1.2.0",
         "huggingface-hub==0.25.1",
+        "monai==1.4.0",
+        "huggingface-hub==0.25.1"
     ],
     python_requires=">=3.10, <3.11",
 )
