@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "retinalysis-inference"
-version = "0.1.0"
+version = "0.3.0"
 description = "Retinal model inference package"
 authors = [{ name = "Jose Vargas", email = "j.vargasquiros@erasmusmc.nl" }]
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10, <3.11"
+requires-python = ">=3.10, <3.12"
 dependencies = [
-    "numpy == 1.*",
+    "numpy == 2.*",
     "pandas == 2.*",
     "opencv-python == 4.*",
     "joblib==1.*",
@@ -26,8 +26,8 @@ dependencies = [
     "huggingface-hub==0.25.1",
 ]
 
-[tool.setuptools]
-packages = ["rtnls_inference"]
+[tool.setuptools.packages.find]
+include = ["rtnls_inference*"]
 
 [project.urls]
 "Homepage" = "https://github.com/Eyened/retinalysis-inference"

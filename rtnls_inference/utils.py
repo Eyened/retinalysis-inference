@@ -45,6 +45,9 @@ def remove_empty_lists(d):
 
 
 def collate_except_metadata(batch):
+    batch = list(filter(lambda x: x is not None, batch))
+    if not batch:
+        raise ValueError("Batch is empty")
     collated = {}
     for key in batch[0].keys():
         if key == "metadata":

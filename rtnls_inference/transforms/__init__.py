@@ -11,9 +11,16 @@ def make_test_transform(config, **kwargs):
     if "test_transform" not in config["datamodule"]:
         return FundusTestTransform(**{**test_cfg, **kwargs})
 
+    class_name = test_cfg.get("class", None)
+    if class_name is None:
+        return FundusTestTransform(**test_cfg)
+    
     test_transform_class = test_transforms.get(
-        test_cfg.get("class", None), FundusTestTransform
+        class_name, None
     )
+
+    if test_transform_class is None:
+        return None
 
     args = {**test_cfg, **kwargs}
     args["base_path"] = config["datamodule"].get("base_path", None)
