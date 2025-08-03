@@ -13,7 +13,7 @@ def make_test_transform(config, **kwargs):
 
     class_name = test_cfg.get("class", None)
     if class_name is None:
-        return FundusTestTransform(**test_cfg)
+        return FundusTestTransform(**{**test_cfg, **kwargs})
     
     test_transform_class = test_transforms.get(
         class_name, None

@@ -33,6 +33,8 @@ class FundusTestTransform(TestTransform):
             keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
         )
 
+        print('FundusTestTransform initialized with contrast_enhance:', self.contrast_enhance)
+
     def undo_resize(self, proba):
         return cv2.resize(
             proba,
