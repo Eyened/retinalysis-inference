@@ -98,6 +98,22 @@ class SegmentationEnsemble(FundusEnsemble):
 
         Image.fromarray(mask).save(dest_path)
 
+    def _predict_batch(self, batch: dict) -> list[dict]:
+        """Run segmentation inference for a batch and return decollated outputs."""
+        with torch.autocast(device_type=self.get_device().type):
+            batch_on_device = move_data_to_device(batch, self.get_device())
+            proba = self.predict_step(batch_on_device)
+
+        items = {
+            "id": batch["id"],
+            "image": proba,
+        }
+        if "bounds" in batch:
+            items["bounds"] = batch["bounds"]
+        if "metadata" in batch:
+            items["metadata"] = batch["metadata"]
+        return decollate_batch(items)
+
     def _predict_dataloader(self, dataloader, dest_path):
         if not os.path.exists(dest_path):
             os.makedirs(dest_path)
@@ -106,17 +122,7 @@ class SegmentationEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                with torch.autocast(device_type=self.get_device().type):
-                    batch = move_data_to_device(batch, self.get_device())
-                    proba = self.predict_step(batch)
-
-                items = {
-                    "id": batch["id"],
-                    "image": proba,
-                }
-                if "bounds" in batch:
-                    items["bounds"] = batch["bounds"]
-                items = decollate_batch(items)
+                items = self._predict_batch(batch)
                 items = [dataloader.dataset.transform.undo_item(item) for item in items]
 
                 for i, item in enumerate(items):

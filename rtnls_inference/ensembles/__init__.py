@@ -21,6 +21,7 @@ from rtnls_inference.ensembles.ensemble_segmentation import (  # noqa: F401
 from rtnls_inference.ensembles.ensemble_segmentation_overlaps import (  # noqa: F401
     SegmentationEnsembleOverlaps,
 )
+from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble  # noqa: F401
 from rtnls_inference.utils import find_release_file, get_all_subclasses_dict
 
 name_to_ensemble = get_all_subclasses_dict(Ensemble)

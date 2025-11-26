@@ -7,8 +7,6 @@ from rtnls_inference.ensembles.base import FundusEnsemble
 from rtnls_inference.ensembles.utils import EnsembleSplitter
 from rtnls_inference.utils import decollate_batch, extract_keypoints_from_heatmaps
 
-from .base import FundusEnsemble
-
 
 def flip(data, axis):
     return torch.flip(data, dims=axis)
@@ -54,6 +52,22 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
 
         return pred  # NMCHW
 
+    def _predict_batch(self, batch: dict) -> list[dict]:
+        """Run heatmap regression inference for a batch and decollate outputs."""
+        with torch.autocast(device_type=self.get_device().type):
+            heatmap = self.forward(batch["image"].to(self.get_device()))
+        keypoints = extract_keypoints_from_heatmaps(heatmap)
+        keypoints = torch.mean(keypoints, dim=1)  # average over models
+        items = {
+            "id": batch["id"],
+            "keypoints": keypoints,
+        }
+        if "bounds" in batch:
+            items["bounds"] = batch["bounds"]
+        if "metadata" in batch:
+            items["metadata"] = batch["metadata"]
+        return decollate_batch(items)
+
     def _predict_dataloader(self, dataloader, dest_path=None):
         with torch.no_grad():
             all_kps = []
@@ -62,19 +76,7 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                with torch.autocast(device_type=self.get_device().type):
-                    heatmap = self.forward(batch["image"].to(self.get_device()))
-                keypoints = extract_keypoints_from_heatmaps(heatmap)
-
-                keypoints = torch.mean(keypoints, dim=1)  # average over models
-                # we make a pseudo-batch with the outputs and everything needed for undoing transforms
-                items = {
-                    "id": batch["id"],
-                    "keypoints": keypoints,
-                }
-                if "bounds" in batch:
-                    items["bounds"] = batch["bounds"]
-                items = decollate_batch(items)
+                items = self._predict_batch(batch)
 
                 items = [dataloader.dataset.transform.undo_item(item) for item in items]
                 all_ids += [item["id"] for item in items]

@@ -29,9 +29,3 @@ pip install retinalysis-inference
 
 3. Done! You can now download and use rtnls-inference ensembles. See [this notebook](./notebooks/inference.ipynb) for an example. The models are automatically downloaded from huggingface.
 
-4. (optional) To be able to load manually-downloaded models by name from a folder define:
-
-```
-export RTNLS_MODEL_RELEASES = /path/to/models
-```
-

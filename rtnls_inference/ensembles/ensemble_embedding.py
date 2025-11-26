@@ -8,34 +8,25 @@ from rtnls_inference.utils import decollate_batch
 from .base import FundusEnsemble
 
 
-def softmax(logits):
-    exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
-    return exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+class EmbeddingEnsemble(FundusEnsemble):
+    """Average normalized embeddings across folds."""
 
-
-class RegressionEnsemble(FundusEnsemble):
     def forward(self, img):
-        """Returns output tensor with shape MN where M=nfolds, the number of models"""
         return self.ensemble(img).cpu().detach()
 
-    def predict_step(self, batch):
-        return self.forward(batch)
-
     def _predict_batch(self, batch: dict) -> list[dict]:
-        """Run regression inference for a batch and return decollated outputs."""
         images = batch["image"].to(self.get_device())
-        preds = self.forward(images)
-        preds = torch.mean(preds, dim=0)
+        embeddings = torch.mean(self.forward(images), dim=0)
         items = {
             "id": batch["id"],
-            "prediction": preds,
+            "embedding": embeddings,
         }
         return decollate_batch(items)
 
     def _predict_dataloader(self, dataloader, dest_path):
         with torch.no_grad():
             batch_ids = []
-            batch_preds = []
+            batch_embeddings = []
             for batch in tqdm(dataloader):
                 if len(batch) == 0:
                     continue
@@ -44,12 +35,10 @@ class RegressionEnsemble(FundusEnsemble):
                 if not batch_items:
                     continue
                 batch_ids.extend(item["id"] for item in batch_items)
-                batch_preds.append(
-                    np.stack([item["prediction"] for item in batch_items], axis=0)
+                batch_embeddings.append(
+                    np.stack([item["embedding"] for item in batch_items], axis=0)
                 )
 
-        batch_preds = np.concatenate(batch_preds, axis=0)
-        return pd.DataFrame(
-            batch_preds,
-            index=batch_ids,
-        )
+        batch_embeddings = np.concatenate(batch_embeddings, axis=0)
+        return pd.DataFrame(batch_embeddings, index=batch_ids)
+

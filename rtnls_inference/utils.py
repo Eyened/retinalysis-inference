@@ -153,15 +153,19 @@ def load_image_pil(path: Union[Path, str]):
 
 
 def load_image(path: Union[Path, str], dtype: Union[np.uint8, np.float32] = np.uint8):
-    if Path(path).suffix == ".npy":
-        im = np.load(path)
-    else:
-        im = np.array(load_image_pil(path), dtype=np.uint8)
-    if im.dtype == np.uint8 and dtype == np.float32:
-        im = (im / 255).astype(np.float32)
-    if im.dtype == np.float32 and dtype == np.uint8:
-        im = np.round(im * 255).astype(np.uint8)
-    return im
+    im = load_image_pil(path)
+    if im.mode != "RGB":
+        im = im.convert("RGB")
+    im = np.array(im)
+
+    if dtype == np.float32:
+        if np.issubdtype(im.dtype, np.integer):
+            im = im.astype(np.float32) / 255.0
+    elif dtype == np.uint8:
+        if np.issubdtype(im.dtype, np.floating):
+            im = np.clip(im * 255.0, 0, 255)
+
+    return im.astype(dtype)
 
 
 def find_release_file(release_path: str | Path) -> Path:

@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 import lightning as L
@@ -32,19 +31,6 @@ class Ensemble(L.LightningModule):
 
         config = json.loads(extra_files["config.yaml"])
         return cls(ensemble, config, fpath, **kwargs)
-
-    @classmethod
-    def from_release(cls, fname: str, **kwargs):
-        if os.path.exists(fname):
-            fpath = fname
-        else:
-            fpath = os.path.join(os.environ["RTNLS_MODEL_RELEASES"], fname)
-
-        fpath = Path(fpath)
-        if fpath.suffix == ".pt":
-            return cls.from_torchscript(fpath, **kwargs)
-        else:
-            raise ValueError(f"Unrecognized extension {fpath.suffix}")
 
     @classmethod
     def from_huggingface(cls, modelstr: str, **kwargs):
@@ -85,45 +71,26 @@ class FundusEnsemble(Ensemble):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _make_test_dataloader(
-        self, dataframe_path: str | Path, base_path: str | Path = None
-    ):
-        from rtnls_models.data_loading.dm_dataframe import DataframeDataModule
-
-        dm = DataframeDataModule.from_path(dataframe_path, base_path)
-        dm.setup()
-        return dm.test_dataloader()
-
     def _make_inference_dataloader(
         self,
-        image_paths,
-        bounds=None,
-        ids=None,
+        inputs: dict,
         preprocess=True,
         batch_size=None,
         num_workers=8,
         ignore_exceptions=True,
     ):
-        contrast_enhance = (
-            (
-                isinstance(image_paths[0], str)
-                or isinstance(image_paths[0], Path)
-                or (len(image_paths[0]) == 1)
-            )
-            if self.config["datamodule"]["test_transform"].get("contrast_enhance", True)
-            else False
+        contrast_enhance = self.config["datamodule"]["test_transform"].get(
+            "contrast_enhance", True
         )
 
         dataset = FundusTestDataset(
-            images_paths=image_paths,
-            bounds=bounds,
-            ids=ids,
+            data=inputs,
             transform=make_test_transform(
                 self.config,
                 preprocess=preprocess,
                 contrast_enhance=contrast_enhance,
             ),
-            ignore_exceptions=True,
+            ignore_exceptions=ignore_exceptions,
         )
 
         batch_size = (
@@ -144,36 +111,52 @@ class FundusEnsemble(Ensemble):
             num_workers=num_workers,
         )
 
-    def predict(
+    def predict_dataset(
         self,
-        image_paths,
-        bounds=None,
-        ids=None,
+        data,
         dest_path=None,
         num_workers=0,
         batch_size=None,
     ):
+        """Run inference on a dataset.
+
+        Args:
+            data: List of dicts, each containing 'id', 'image', and optionally 'contrast_enhanced'
+            dest_path: Directory to save predictions
+            num_workers: Number of dataloader workers
+            batch_size: Batch size for inference
+        """
+        inputs = {"images": data}
         dataloader = self._make_inference_dataloader(
-            image_paths,
-            bounds=bounds,
-            ids=ids,
+            inputs,
             num_workers=num_workers,
             preprocess=True,
             batch_size=batch_size,
         )
         return self._predict_dataloader(dataloader, dest_path)
 
+    def predict(self, *args, **kwargs):
+        """Alias for predict_dataset to maintain backward compatibility."""
+        return self.predict_dataset(*args, **kwargs)
+
     def predict_preprocessed(
         self,
-        image_paths,
-        ids=None,
+        data,
         dest_path=None,
         num_workers=0,
         batch_size=None,
     ):
+        """Run inference on preprocessed images.
+
+        Args:
+            data: List of dicts, each containing 'id', 'image', and optionally 'contrast_enhanced'
+            dest_path: Directory to save predictions
+            num_workers: Number of dataloader workers
+            batch_size: Batch size for inference
+        """
+        inputs = {"images": data}
         dataloader = self._make_inference_dataloader(
-            image_paths,
-            ids=ids,
+            inputs,
             num_workers=num_workers,
             preprocess=False,
             batch_size=batch_size,
@@ -185,14 +168,38 @@ class FundusEnsemble(Ensemble):
         df: pd.DataFrame,
         dest_path=None,
         image_path_column="image",
+        mask_path_column="mask",
+        id_column="id",
         preprocess=True,
         **kwargs,
     ):
-        image_paths = df[image_path_column].to_list()
+        """Run inference on a pandas DataFrame.
+
+        Args:
+            df: DataFrame with image paths
+            dest_path: Directory to save predictions
+            image_path_column: Column name for image paths
+            mask_path_column: Column name for mask paths (optional)
+            id_column: Column name for IDs (optional, will use index if not present)
+            preprocess: Whether to preprocess images
+            **kwargs: Additional arguments passed to predict methods
+        """
+        data = []
+        for idx, row in df.iterrows():
+            entry = {
+                "id": row.get(id_column, str(idx))
+                if id_column in df.columns
+                else str(idx),
+                "image": str(row[image_path_column]),
+            }
+            if mask_path_column in df.columns:
+                entry["mask"] = str(row[mask_path_column])
+            data.append(entry)
+
         if preprocess:
-            return self.predict(image_paths, dest_path, **kwargs)
+            return self.predict(data, dest_path, **kwargs)
         else:
-            return self.predict_preprocessed(image_paths, dest_path, **kwargs)
+            return self.predict_preprocessed(data, dest_path, **kwargs)
 
     def get_device(self):
         # Check if the module has any parameters

@@ -1,7 +1,6 @@
 import albumentations as A
 import cv2
 import torch
-
 from rtnls_fundusprep.mask_extraction import CFIBounds as Bounds
 from rtnls_fundusprep.mask_extraction import get_cfi_bounds
 from rtnls_fundusprep.preprocessor import FundusPreprocessor
@@ -16,8 +15,10 @@ class FundusTestTransform(TestTransform):
         resize=None,
         preprocess=False,
         contrast_enhance=True,
+        normalize="imagenet",
         **kwargs,
     ):
+        super().__init__(normalize=normalize)
         self.prep_function = FundusPreprocessor(
             square_size=square_size,
         )
@@ -32,8 +33,6 @@ class FundusTestTransform(TestTransform):
             additional_targets={"ce": "image"},
             keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
         )
-
-        print('FundusTestTransform initialized with contrast_enhance:', self.contrast_enhance)
 
     def undo_resize(self, proba):
         return cv2.resize(
@@ -65,12 +64,7 @@ class FundusTestTransform(TestTransform):
                 new_item["keypoints"] = kp
         return new_item
 
-    def __call__(self, preprocess=None, **item):
-        if "ce" in item and self.contrast_enhance:
-            raise ValueError(
-                "Contrast enhancement image already present in kwargs. Would apply contrast enhancement twice."
-            )
-
+    def _transform(self, preprocess=None, **item):
         do_preprocess = preprocess if preprocess is not None else self.preprocess
         if do_preprocess:
             # we preprocess without contrast enhance
@@ -78,13 +72,20 @@ class FundusTestTransform(TestTransform):
             item = self.prep_function(**item)
 
         if self.contrast_enhance:
-            # if the bounds of the original (non-cropped) image are available
-            if "bounds" in item["metadata"]:
-                _, bounds = Bounds(**item["metadata"]["bounds"]).crop(self.square_size)
-            else:  # else we compute the bounds of the provided image
-                bounds = get_cfi_bounds(item["image"])
+            if "ce" not in item:
+                # if the bounds of the original (non-cropped) image are available
+                if item.get("metadata") and "bounds" in item["metadata"]:
+                    _, bounds = Bounds(**item["metadata"]["bounds"]).crop(
+                        self.square_size
+                    )
+                else:  # else we compute the bounds of the provided image
+                    bounds = get_cfi_bounds(item["image"])
 
-            item["ce"] = bounds.contrast_enhanced_5
+                item["ce"] = bounds.contrast_enhanced_5
+        else:
+            # hack: make sure that 'ce' is not passed when it comes from the dataset
+            if "ce" in item:
+                item.pop("ce")
 
         # serialize the bounds
         # cannot pass arbitrary objects to the dataloader

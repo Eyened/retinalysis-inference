@@ -1,12 +1,47 @@
 from abc import abstractmethod
 from typing import Any, Dict
 
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
 
 class TestTransform:
+    def __init__(self, normalize="imagenet"):
+        transforms = []
+        if normalize == "imagenet":
+            transforms.append(
+                A.Normalize(
+                    mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225),
+                    max_pixel_value=255.0,
+                )
+            )
+        elif normalize == "diffusion":
+            transforms.append(
+                A.Normalize(
+                    mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), max_pixel_value=255.0
+                )
+            )
+        elif normalize:
+            raise ValueError(f"Invalid normalization strategy: {normalize}")
+
+        transforms.append(ToTensorV2())
+
+        self.post_transform = A.Compose(
+            transforms,
+            additional_targets={"ce": "image"},
+            keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
+        )
+
     @abstractmethod
     def undo_item(self, item: Dict[str, Any], preprocess: bool = False):
         pass
 
     @abstractmethod
-    def __call__(self, preprocess: bool = None, **item):
+    def _transform(self, preprocess: bool = None, **item):
         pass
+
+    def __call__(self, preprocess: bool = None, **item):
+        item = self._transform(preprocess=preprocess, **item)
+        item = self.post_transform(**item)
+        return item
