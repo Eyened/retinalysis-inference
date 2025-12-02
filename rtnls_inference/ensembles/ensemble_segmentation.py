@@ -76,20 +76,6 @@ class SegmentationEnsemble(FundusEnsemble):
 
         return pred  # NMCHW
 
-    # def predict_batch(self, batch):
-    #     proba = self.predict_step(batch)
-
-    #     # we make a pseudo-batch with the outputs and everything needed for undoing transforms
-    #     items = {
-    #         "id": batch["id"],
-    #         "image": proba,
-    #     }
-    #     if "bounds" in batch:
-    #         items["bounds"] = batch["bounds"]
-    #     items = decollate_batch(items)
-    #     items = [self.transform.undo_item(item) for item in items]
-    #     return items
-
     def _save_item(self, item: dict, dest_path: str | Path):
         mask = np.argmax(item["image"], -1)
         mask = mask.squeeze().astype(np.uint8)

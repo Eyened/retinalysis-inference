@@ -19,6 +19,10 @@ class ModelInputDTO(BaseModel):
     contrast_enhanced: Optional[str] = Field(
         default=None, description="Path to the contrast enhanced image (optional)."
     )
+    input_mask: Optional[str] = Field(
+        default=None,
+        description="Path to an optional input segmentation mask (binary).",
+    )
     metadata: Optional[Any] = Field(
         default=None,
         description="Arbitrary metadata that should be kept alongside the sample.",
@@ -44,7 +48,7 @@ class ModelInputDTO(BaseModel):
             return float(value)
         raise TypeError(f"{field_name} must be numeric (got {type(value)!r})")
 
-    @field_validator("image", "contrast_enhanced", mode="before")
+    @field_validator("image", "contrast_enhanced", "input_mask", mode="before")
     @classmethod
     def validate_paths(cls, value: Optional[str], info):
         if value in (None, ""):
