@@ -31,14 +31,7 @@ class ModelInputDTO(BaseModel):
         default=None, description="Optional field-of-view measurement."
     )
 
-    @staticmethod
-    def _validate_existing_path(path_value: str, field_name: str) -> str:
-        if not isinstance(path_value, str):
-            raise TypeError(f"{field_name} must be a string (got {type(path_value)!r})")
-        resolved = Path(path_value).expanduser()
-        if not resolved.exists():
-            raise ValueError(f"{field_name} path does not exist: {path_value}")
-        return str(resolved)
+
 
     @staticmethod
     def _ensure_float(value: Any, field_name: str) -> float:
@@ -48,12 +41,7 @@ class ModelInputDTO(BaseModel):
             return float(value)
         raise TypeError(f"{field_name} must be numeric (got {type(value)!r})")
 
-    @field_validator("image", "contrast_enhanced", "input_mask", mode="before")
-    @classmethod
-    def validate_paths(cls, value: Optional[str], info):
-        if value in (None, ""):
-            return None
-        return cls._validate_existing_path(value, info.field_name)
+
 
     @field_validator("id", mode="before")
     @classmethod
