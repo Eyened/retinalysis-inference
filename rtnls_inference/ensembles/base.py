@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
 )
+from rtnls_inference.readers import make_mask_reader
 from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import collate_except_metadata
 
@@ -79,9 +80,21 @@ class FundusEnsemble(Ensemble):
         num_workers=8,
         ignore_exceptions=True,
     ):
-        contrast_enhance = self.config["datamodule"]["test_transform"].get(
-            "contrast_enhance", True
-        )
+        datamodule_config = self.config.get("datamodule", {})
+        test_transform = datamodule_config.get("test_transform", {})
+        contrast_enhance = test_transform.get("contrast_enhance", True)
+
+        mask_reader = None
+        if "mask_reader" in datamodule_config and isinstance(
+            datamodule_config["mask_reader"], dict
+        ):
+            mask_reader = make_mask_reader(datamodule_config["mask_reader"])
+
+        input_mask_reader = None
+        if "input_mask_reader" in datamodule_config and isinstance(
+            datamodule_config["input_mask_reader"], dict
+        ):
+            input_mask_reader = make_mask_reader(datamodule_config["input_mask_reader"])
 
         dataset = FundusTestDataset(
             data=inputs,
@@ -91,6 +104,8 @@ class FundusEnsemble(Ensemble):
                 contrast_enhance=contrast_enhance,
             ),
             ignore_exceptions=ignore_exceptions,
+            mask_reader=mask_reader,
+            input_mask_reader=input_mask_reader,
         )
 
         batch_size = (
