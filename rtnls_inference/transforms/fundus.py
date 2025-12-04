@@ -30,7 +30,7 @@ class FundusTestTransform(TestTransform):
         self.contrast_enhance = contrast_enhance
         self.transform = A.Compose(
             [A.Resize(resize, resize)],
-            additional_targets={"ce": "image"},
+            additional_targets={"ce": "image", "input_mask": "mask"},
             keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
         )
 
