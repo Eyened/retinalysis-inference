@@ -1,10 +1,36 @@
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
+import io
 import numpy as np
-import pydicom
 import torch
 from PIL import Image
+
+try:
+    import simplejpeg  # type: ignore
+except Exception:  # pragma: no cover
+    simplejpeg = None
+
+
+def _normalize_suffix(suffix: Optional[str]) -> str:
+    if not suffix:
+        return ""
+    if not suffix.startswith("."):
+        suffix = "." + suffix
+    return suffix.lower()
+
+
+def _decode_image_pil(data: bytes) -> np.ndarray:
+    with Image.open(io.BytesIO(data)) as im:
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        return np.array(im)
+
+
+def _decode_jpeg_simplejpeg(data: bytes) -> np.ndarray:
+    if simplejpeg is None:
+        raise RuntimeError("simplejpeg is not available")
+    return simplejpeg.decode_jpeg(data, colorspace="RGB")
 
 
 def test_collate_fn(batch):
@@ -141,31 +167,50 @@ def extract_keypoints_from_heatmaps(heatmaps):
     return outputs
 
 
-def load_image_pil(path: Union[Path, str]):
+def load_image_pil(path: Union[Path, str]) -> Image.Image:
     if isinstance(path, str):
         path = Path(path)
     if path.suffix == ".dcm":
-        ds = pydicom.dcmread(str(path))
-        img = Image.fromarray(ds.pixel_array)
+        raise ValueError("DICOM images (.dcm) are no longer supported")
+    return Image.open(str(path))
+
+
+def read_file_bytes(path: Union[Path, str]) -> bytes:
+    """Read a file's raw bytes."""
+    if isinstance(path, str):
+        path = Path(path)
+    return path.read_bytes()
+
+def load_image_from_bytes(
+    data: bytes,
+    dtype: Union[np.uint8, np.float32] = np.uint8,
+    suffix: Optional[str] = None,
+) -> np.ndarray:
+    """Decode an encoded image from bytes into an RGB numpy array."""
+    suffix = _normalize_suffix(suffix)
+    if suffix in (".jpg", ".jpeg"):
+        try:
+            arr = _decode_jpeg_simplejpeg(data)
+        except Exception:
+            arr = _decode_image_pil(data)
     else:
-        img = Image.open(str(path))
-    return img
+        arr = _decode_image_pil(data)
+
+    if dtype == np.float32:
+        if np.issubdtype(arr.dtype, np.integer):
+            arr = arr.astype(np.float32) / 255.0
+    elif dtype == np.uint8:
+        if np.issubdtype(arr.dtype, np.floating):
+            arr = np.clip(arr * 255.0, 0, 255)
+
+    return arr.astype(dtype)
 
 
 def load_image(path: Union[Path, str], dtype: Union[np.uint8, np.float32] = np.uint8):
-    im = load_image_pil(path)
-    if im.mode != "RGB":
-        im = im.convert("RGB")
-    im = np.array(im)
-
-    if dtype == np.float32:
-        if np.issubdtype(im.dtype, np.integer):
-            im = im.astype(np.float32) / 255.0
-    elif dtype == np.uint8:
-        if np.issubdtype(im.dtype, np.floating):
-            im = np.clip(im * 255.0, 0, 255)
-
-    return im.astype(dtype)
+    if isinstance(path, str):
+        path = Path(path)
+    data = read_file_bytes(path)
+    return load_image_from_bytes(data=data, dtype=dtype, suffix=path.suffix)
 
 
 def find_release_file(release_path: str | Path) -> Path:

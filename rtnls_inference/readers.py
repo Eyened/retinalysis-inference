@@ -4,7 +4,7 @@ from typing import Union
 
 import numpy as np
 from PIL import Image
-
+import torch
 from rtnls_inference.utils import get_all_subclasses_dict
 
 
@@ -27,6 +27,9 @@ class MaskReader:
 
     def read_mask(self, fpath: Union[str, Path]):
         raise NotImplementedError
+
+    def post_transform(self, mask: np.ndarray):
+        return mask
 
 
 class DefaultMaskReader(MaskReader):
@@ -54,6 +57,23 @@ class BinaryMaskReader(MaskReader):
         #     im[im == 255] = 1
         im[im > 0] = 1
         return im
+
+
+class ArteryVeinReader(MaskReader):
+    def read_mask(self, fpath: Union[str, Path]):
+        if isinstance(fpath, str):
+            fpath = Path(fpath)
+        image = Image.open(fpath)
+        im = np.array(image, dtype=np.uint8)
+        if im.ndim == 3:
+            im = im[..., 0]
+
+        return im.astype(np.uint8)
+
+    def post_transform(self, mask: torch.Tensor):
+        mask = torch.nn.functional.one_hot(mask, num_classes=self.num_classes)
+        
+        return mask
 
 
 class ArteriesReader(MaskReader):

@@ -81,8 +81,6 @@ class FundusEnsemble(Ensemble):
         ignore_exceptions=True,
     ):
         datamodule_config = self.config.get("datamodule", {})
-        test_transform = datamodule_config.get("test_transform", {})
-        contrast_enhance = test_transform.get("contrast_enhance", True)
 
         mask_reader = None
         if "mask_reader" in datamodule_config and isinstance(
@@ -99,9 +97,8 @@ class FundusEnsemble(Ensemble):
         dataset = FundusTestDataset(
             data=inputs,
             transform=make_test_transform(
-                self.config,
+                self.config["datamodule"].get("test_transform", {}),
                 preprocess=preprocess,
-                contrast_enhance=contrast_enhance,
             ),
             ignore_exceptions=ignore_exceptions,
             mask_reader=mask_reader,
