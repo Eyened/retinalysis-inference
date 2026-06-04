@@ -24,7 +24,8 @@ dependencies = [
     "PyYAML>=5.4",
     "monai==1.5.1",
     "huggingface-hub",
-    "GPUtil==1.*"
+    "GPUtil==1.*",
+    "pydantic>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]
