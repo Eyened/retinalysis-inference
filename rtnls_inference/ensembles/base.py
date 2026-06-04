@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import lightning as L
@@ -12,6 +13,8 @@ from rtnls_inference.datasets.fundus import (
 )
 from rtnls_inference.readers import make_mask_reader
 from rtnls_inference.transforms import make_test_transform
+from rtnls_inference.ensembles.onnx_backend import OnnxEnsembleBackend
+from rtnls_inference.release_config import update_stored_config
 from rtnls_inference.utils import collate_except_metadata
 
 
@@ -25,19 +28,56 @@ class Ensemble(L.LightningModule):
         self.fpath = fpath
 
     @classmethod
-    def from_torchscript(cls, fpath: str | Path, **kwargs):
+    def from_torchscript(
+        cls,
+        fpath: str | Path,
+        inference_overrides: dict | None = None,
+        **kwargs,
+    ):
+        """Load a TorchScript ensemble, optionally overriding inference config."""
         extra_files = {"config.yaml": ""}  # values will be replaced with data
 
         ensemble = torch.jit.load(fpath, _extra_files=extra_files).eval()
 
-        config = json.loads(extra_files["config.yaml"])
+        config = deepcopy(json.loads(extra_files["config.yaml"]))
+        if inference_overrides is not None:
+            config.setdefault("inference", {}).update(inference_overrides)
+
+        return cls(ensemble, config, fpath, **kwargs)
+
+    @classmethod
+    def from_onnx(
+        cls,
+        fpath: str | Path,
+        inference_overrides: dict | None = None,
+        providers: list[str] | None = None,
+        **kwargs,
+    ):
+        """Load an ONNX ensemble release, optionally overriding inference config."""
+        fpath = Path(fpath)
+        ensemble = OnnxEnsembleBackend(fpath, providers=providers).eval()
+        config = deepcopy(ensemble.config)
+        if inference_overrides is not None:
+            config.setdefault("inference", {}).update(inference_overrides)
         return cls(ensemble, config, fpath, **kwargs)
 
     @classmethod
     def from_huggingface(cls, modelstr: str, **kwargs):
         repo_name, repo_fpath = modelstr.split(":")
         fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
+        if str(fpath).endswith(".onnx"):
+            return cls.from_onnx(fpath, **kwargs)
         return cls.from_torchscript(fpath, **kwargs)
+
+    @classmethod
+    def from_release(cls, release_name: str, prefer: str | None = None, **kwargs):
+        """Load a release from RTNLS_MODEL_RELEASES by name."""
+        import os
+
+        from rtnls_inference.ensembles import make_ensemble
+
+        release_path = os.path.join(os.environ["RTNLS_MODEL_RELEASES"], release_name)
+        return make_ensemble(release_path, prefer=prefer, **kwargs)
 
     @classmethod
     def from_modelstring(cls, modelstr: str, **kwargs):
@@ -45,6 +85,33 @@ class Ensemble(L.LightningModule):
             return cls.from_huggingface(modelstr[3:], **kwargs)
         else:
             return cls.from_release(modelstr, **kwargs)
+
+    def to(self, *args, **kwargs):
+        out = super().to(*args, **kwargs)
+        if hasattr(self.ensemble, "set_inference_device"):
+            self.ensemble.set_inference_device(self.get_device())
+        return out
+
+    def get_device(self):
+        if hasattr(self.ensemble, "inference_device"):
+            return self.ensemble.inference_device
+        if next(self.parameters(), None) is not None:
+            return next(self.parameters()).device
+        return torch.device("cpu")
+
+    def save_stored_config(
+        self,
+        path: str | Path | None = None,
+        *,
+        out_path: str | Path | None = None,
+    ) -> Path:
+        """Persist ``self.config`` into the release file (.pt or .onnx)."""
+        release_path = Path(path or self.fpath)
+        if release_path.suffix.lower() not in {".pt", ".onnx"}:
+            raise ValueError(
+                f"Cannot save config: release path must be .pt or .onnx, got {release_path}"
+            )
+        return update_stored_config(release_path, self.config, out_path=out_path)
 
     def hf_upload(self):
         """Upload self.fpath to huggingface"""
@@ -212,18 +279,6 @@ class FundusEnsemble(Ensemble):
             return self.predict(data, dest_path, **kwargs)
         else:
             return self.predict_preprocessed(data, dest_path, **kwargs)
-
-    def get_device(self):
-        # Check if the module has any parameters
-        if next(self.parameters(), None) is not None:
-            # Return the device of the first parameter
-            return next(self.parameters()).device
-        else:
-            # Fallback or default device if the module has no parameters
-            # This might be necessary for modules that do not have parameters
-            # and hence might not have a clear device assignment.
-            # Adjust this part based on your specific needs.
-            return torch.device("cpu")
 
     def predict_batch(self, batch):
         pass

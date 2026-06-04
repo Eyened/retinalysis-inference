@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 import io
 import numpy as np
@@ -146,6 +146,40 @@ def decollate_batch(batch):
     return decollated
 
 
+def format_keypoints_for_transform(
+    keypoints: Any,
+    keypoint_names: Optional[Sequence[str]] = None,
+) -> list:
+    """Convert named dataset keypoints to Albumentations' ordered xy list."""
+    if keypoints is None:
+        return []
+
+    if isinstance(keypoints, dict):
+        names = keypoint_names or sorted(keypoints)
+        missing = [name for name in names if name not in keypoints]
+        if missing:
+            raise KeyError(f"Missing keypoints for configured names: {missing}")
+
+        formatted = []
+        for name in names:
+            coords = keypoints[name]
+            if len(coords) != 2:
+                raise ValueError(
+                    f"keypoints['{name}'] must contain exactly [x, y], got {coords}"
+                )
+            formatted.append([float(coords[0]), float(coords[1])])
+        return formatted
+
+    return keypoints
+
+
+def format_keypoints_to_tensor(keypoints: Any) -> torch.Tensor:
+    """Convert transformed keypoints to the tensor shape expected by LMs."""
+    if torch.is_tensor(keypoints):
+        return keypoints.to(torch.float32)
+    return torch.as_tensor(keypoints, dtype=torch.float32)
+
+
 def extract_keypoints_from_heatmaps(heatmaps):
     """Input shape: NMCHW (n_models, batch_size, num_keypoints, height, width)
     Output shape: NMC2
@@ -213,13 +247,34 @@ def load_image(path: Union[Path, str], dtype: Union[np.uint8, np.float32] = np.u
     return load_image_from_bytes(data=data, dtype=dtype, suffix=path.suffix)
 
 
-def find_release_file(release_path: str | Path) -> Path:
+def find_release_file(
+    release_path: str | Path,
+    prefer: str | None = None,
+) -> Path:
+    """Resolve a release path to an existing .pt or .onnx file."""
     if not isinstance(release_path, Path):
         release_path = Path(release_path)
 
-    assert not bool(release_path.suffix), "release_path should not have a suffix"
+    assert not release_path.suffix, "release_path should not have a suffix"
 
-    if release_path.with_suffix(".pt").exists():
-        return release_path.with_suffix(".pt")
+    pt_path = release_path.with_suffix(".pt")
+    onnx_path = release_path.with_suffix(".onnx")
+    if prefer == "onnx":
+        candidates = [onnx_path, pt_path]
     else:
-        raise ValueError(f"No release file found for relase path {release_path}")
+        candidates = [pt_path, onnx_path]
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise ValueError(
+        f"No release file found for release path {release_path} "
+        f"(tried {pt_path.name} and {onnx_path.name})"
+    )
+
+
+from rtnls_inference.release_config import (  # noqa: E402
+    load_stored_config,
+    update_stored_config,
+)

@@ -27,6 +27,12 @@ dependencies = [
     "GPUtil==1.*"
 ]
 
+[project.optional-dependencies]
+onnx = [
+    "onnx>=1.16",
+    "onnxruntime>=1.17",
+]
+
 [tool.setuptools.packages.find]
 include = ["rtnls_inference*"]
 

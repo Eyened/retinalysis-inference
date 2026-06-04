@@ -29,7 +29,13 @@ class TestTransform:
 
         self.post_transform = A.Compose(
             transforms,
-            additional_targets={"ce": "image"},
+            additional_targets={
+                "ce": "image",
+                "logits": "mask",
+                "input_mask": "mask",
+                "loss_mask": "mask",
+                "masks_multilabel": "mask",
+            },
             keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
         )
 
