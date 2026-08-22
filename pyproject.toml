@@ -26,6 +26,8 @@ dependencies = [
     "huggingface-hub",
     "GPUtil==1.*",
     "pydantic>=2.0,<3.0",
+    "scikit-image>=0.22",
+    "networkx>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -42,4 +44,5 @@ include = ["rtnls_inference*"]
 "Bug Tracker" = "https://github.com/Eyened/retinalysis-inference/issues"
 
 [tool.setuptools_scm]
-# can be empty if no extra settings are needed, presence enables setuptools-scm
+version_scheme = "no-guess-dev"
+local_scheme = "no-local-version"

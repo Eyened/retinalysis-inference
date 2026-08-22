@@ -33,6 +33,7 @@ class FundusTestTransform(TestTransform):
             additional_targets={
                 "ce": "image",
                 "logits": "image",
+                "head_logits": "image",
                 "input_mask": "mask",
                 "loss_mask": "mask",
                 "masks_multilabel": "mask",

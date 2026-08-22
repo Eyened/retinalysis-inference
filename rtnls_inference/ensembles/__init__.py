@@ -6,14 +6,20 @@ from pathlib import Path
 import torch
 
 from rtnls_inference.ensembles.base import Ensemble
-from rtnls_inference.ensembles.onnx_backend import OnnxEnsembleBackend, load_config_from_onnx
+from rtnls_inference.ensembles.ensemble_artery_vein import (  # noqa: F401
+    ArteryVeinSegmentationEnsemble,
+)
 from rtnls_inference.ensembles.ensemble_classification import (  # noqa: F401
     ClassificationEnsemble,
 )
+from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble  # noqa: F401
 from rtnls_inference.ensembles.ensemble_heatmap_regression import (  # noqa: F401
     HeatmapRegressionEnsemble,
 )
 from rtnls_inference.ensembles.ensemble_keypoints import KeypointsEnsemble  # noqa: F401
+from rtnls_inference.ensembles.ensemble_lunet_artery_vein import (  # noqa: F401
+    LUNetArteryVeinEnsemble,
+)
 from rtnls_inference.ensembles.ensemble_regression import (
     RegressionEnsemble,  # noqa: F401
 )
@@ -23,7 +29,10 @@ from rtnls_inference.ensembles.ensemble_segmentation import (  # noqa: F401
 from rtnls_inference.ensembles.ensemble_segmentation_overlaps import (  # noqa: F401
     SegmentationEnsembleOverlaps,
 )
-from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble  # noqa: F401
+from rtnls_inference.ensembles.onnx_backend import (
+    OnnxEnsembleBackend,
+    load_config_from_onnx,
+)
 from rtnls_inference.release_config import load_stored_config, update_stored_config
 from rtnls_inference.utils import find_release_file, get_all_subclasses_dict
 
@@ -31,10 +40,29 @@ name_to_ensemble = get_all_subclasses_dict(Ensemble)
 
 
 def get_ensemble_class(config) -> type[Ensemble]:
-    from rtnls_models.models import get_model_class
+    """Resolve the inference wrapper class from embedded release config."""
+    ensemble_name = config.get("inference", {}).get("ensemble_class")
+    if ensemble_name:
+        try:
+            return name_to_ensemble[ensemble_name]
+        except KeyError as exc:
+            known = ", ".join(sorted(name_to_ensemble))
+            raise ValueError(
+                f"Unknown ensemble class {ensemble_name!r}. Known classes: {known}"
+            ) from exc
+
+    try:
+        from rtnls_models.models import get_model_class
+    except ImportError as exc:
+        raise ImportError(
+            "Release config has no inference.ensemble_class and rtnls_models is "
+            "not installed. Install rtnls-models or re-export the release."
+        ) from exc
 
     model_class = get_model_class(config)
     ensemble_class = model_class._ensemble_class
+    if ensemble_class is None:
+        raise ValueError(f"Model class {model_class.__name__} has no _ensemble_class")
     return ensemble_class
 
 
@@ -87,9 +115,7 @@ def make_ensemble_from_checkpoints(
         source = checkpoint_name
     else:
         checkpoint_paths = (
-            [checkpoints]
-            if isinstance(checkpoints, (str, Path))
-            else list(checkpoints)
+            [checkpoints] if isinstance(checkpoints, (str, Path)) else list(checkpoints)
         )
         wrapper = EnsembleWrapper.from_checkpoint_files(
             checkpoint_paths,

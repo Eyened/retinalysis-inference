@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
+from rtnls_inference.artery_vein import load_av_head_logits
 from rtnls_inference.readers import BinaryMaskReader, MaskReader
 from rtnls_inference.transforms.base import TestTransform
 from rtnls_inference.utils import (
@@ -69,6 +70,15 @@ class FundusTestDataset(TestDataset):
 
         return np.load(fpath).astype(np.float32, copy=False)
 
+    def _open_head_logits(self, idx):
+        entry = self.data["images"][idx]
+        fpath = entry.get("head_logits")
+        if fpath is None:
+            return None
+        if entry.get("mask") is not None:
+            raise ValueError("mask and head_logits are mutually exclusive")
+        return load_av_head_logits(fpath)
+
     def _open_masks_multilabel(self, idx):
         """Open named binary masks as a channel-last mask stack."""
         entry = self.data["images"][idx]
@@ -111,6 +121,18 @@ class FundusTestDataset(TestDataset):
 
         return logits.float()
 
+    @staticmethod
+    def _format_head_logits(logits):
+        if not torch.is_tensor(logits):
+            logits = torch.as_tensor(logits)
+        if logits.ndim != 3:
+            raise ValueError(f"head_logits must have 3 dimensions, got {logits.shape}")
+        if logits.shape[-1] == 7:
+            logits = logits.permute(2, 0, 1)
+        elif logits.shape[0] != 7:
+            raise ValueError(f"head_logits must have seven channels, got {logits.shape}")
+        return logits.float()
+
     def _open_input_mask(self, idx):
         """Open optional input mask, expected to be binary."""
         entry = self.data["images"][idx]
@@ -146,6 +168,7 @@ class FundusTestDataset(TestDataset):
         image, ce = self._open_image(idx)
         mask = self._open_mask(idx)
         logits = self._open_logits(idx)
+        head_logits = self._open_head_logits(idx)
         masks_multilabel = self._open_masks_multilabel(idx)
         input_mask = self._open_input_mask(idx)
         loss_mask = self._open_loss_mask(idx)
@@ -156,6 +179,7 @@ class FundusTestDataset(TestDataset):
             "image": image,
             "mask": mask,
             "logits": logits,
+            "head_logits": head_logits,
             "masks_multilabel": masks_multilabel,
             "input_mask": input_mask,
             "loss_mask": loss_mask,
@@ -187,6 +211,9 @@ class FundusTestDataset(TestDataset):
 
         if "logits" in item:
             item["logits"] = self._format_logits(item["logits"])
+
+        if "head_logits" in item:
+            item["head_logits"] = self._format_head_logits(item["head_logits"])
 
         if "ce" in item:
             # Assuming tensor output from transform (CHW)

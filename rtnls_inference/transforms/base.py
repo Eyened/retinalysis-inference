@@ -22,6 +22,14 @@ class TestTransform:
                     mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), max_pixel_value=255.0
                 )
             )
+        elif normalize == "zero-one":
+            transforms.append(
+                A.Normalize(
+                    mean=(0.0, 0.0, 0.0),
+                    std=(1.0, 1.0, 1.0),
+                    max_pixel_value=255.0,
+                )
+            )
         elif normalize:
             raise ValueError(f"Invalid normalization strategy: {normalize}")
 
@@ -32,6 +40,7 @@ class TestTransform:
             additional_targets={
                 "ce": "image",
                 "logits": "mask",
+                "head_logits": "mask",
                 "input_mask": "mask",
                 "loss_mask": "mask",
                 "masks_multilabel": "mask",
