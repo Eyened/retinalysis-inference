@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from rtnls_inference.artery_vein import (
     AV_HEAD_NAMES,
@@ -41,7 +42,7 @@ class _CenterEnsemble(torch.nn.Module):
 
 
 def test_named_head_logits_roundtrip(tmp_path):
-    logits = np.random.default_rng(3).normal(size=(23, 29, 7)).astype(np.float32)
+    logits = np.random.default_rng(3).normal(size=(23, 29, 4)).astype(np.float32)
     path = tmp_path / "sample.npz"
     save_av_head_logits(path, logits)
     loaded = load_av_head_logits(path)
@@ -60,6 +61,42 @@ def test_named_head_logits_rejects_legacy_tensor(tmp_path):
         raise AssertionError("Legacy logits should not be accepted")
 
 
+def test_named_head_logits_rejects_schema_v1(tmp_path):
+    path = tmp_path / "schema_v1.npz"
+    payload = {name: np.zeros((20, 20), dtype=np.float16) for name in AV_HEAD_NAMES}
+    np.savez(
+        path,
+        schema_version=np.asarray(1, dtype=np.int16),
+        source_shape=np.asarray((20, 20), dtype=np.int32),
+        **payload,
+    )
+    try:
+        load_av_head_logits(path)
+    except ValueError as error:
+        assert "Unsupported AV head-logit schema 1" in str(error)
+    else:
+        raise AssertionError("Schema-v1 logits should not be accepted")
+
+
+def test_named_head_logits_rejects_malformed_shape_and_nonfinite_values(tmp_path):
+    malformed_path = tmp_path / "malformed.npz"
+    payload = {name: np.zeros((20, 20), dtype=np.float16) for name in AV_HEAD_NAMES}
+    payload["artery"] = np.zeros((19, 20), dtype=np.float16)
+    np.savez(
+        malformed_path,
+        schema_version=np.asarray(2, dtype=np.int16),
+        source_shape=np.asarray((20, 20), dtype=np.int32),
+        **payload,
+    )
+    with pytest.raises(ValueError, match="has shape"):
+        load_av_head_logits(malformed_path)
+
+    nonfinite = np.zeros((20, 20, 4), dtype=np.float32)
+    nonfinite[0, 0, 0] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        save_av_head_logits(tmp_path / "nonfinite.npz", nonfinite)
+
+
 def test_halo_stitching_reconstructs_center_predictions():
     image = torch.linspace(-1, 1, 70 * 74).reshape(1, 1, 70, 74)
     output = halo_sliding_window_inference(
@@ -70,7 +107,7 @@ def test_halo_stitching_reconstructs_center_predictions():
         overlap=0.5,
         sw_batch_size=3,
     )
-    assert output.shape == (1, 7, 70, 74)
+    assert output.shape == (1, 4, 70, 74)
     torch.testing.assert_close(output[:, 0], image[:, 0], atol=1e-5, rtol=1e-5)
 
 
@@ -105,21 +142,21 @@ def test_halo_stitching_preserves_model_axis():
         overlap=0.5,
         sw_batch_size=2,
     )
-    assert output.shape == (2, 2, 7, 40, 42)
+    assert output.shape == (2, 2, 4, 40, 42)
     torch.testing.assert_close(
         output[:, 1] - output[:, 0], torch.full_like(output[:, 0], 2)
     )
 
 
 def test_legacy_projection_is_normalized():
-    logits = np.random.default_rng(5).normal(size=(17, 19, 7)).astype(np.float32)
+    logits = np.random.default_rng(5).normal(size=(17, 19, 4)).astype(np.float32)
     probabilities = av_logits_to_legacy_probabilities(logits)
     assert probabilities.shape == (17, 19, 4)
     np.testing.assert_allclose(probabilities.sum(axis=-1), 1.0, atol=1e-6)
 
 
 def test_graph_refinement_preserves_support_and_crossings():
-    logits = np.full((48, 48, 7), -8.0, dtype=np.float32)
+    logits = np.full((48, 48, 4), -8.0, dtype=np.float32)
     logits[23:26, 5:43, 0] = 8.0
     logits[5:43, 23:26, 0] = 8.0
     logits[23:26, 5:43, 1] = 3.0
@@ -127,7 +164,6 @@ def test_graph_refinement_preserves_support_and_crossings():
     logits[5:43, 23:26, 1] = -3.0
     logits[5:43, 23:26, 2] = 3.0
     logits[22:27, 22:27, 3] = 8.0
-    logits[..., 4] = logits[..., 0]
     refined = refine_artery_vein_graph(logits, min_component_size=3)
     vessel = logits[..., 0] > 0
     assert np.array_equal(refined > 0, vessel)
@@ -141,7 +177,7 @@ def test_refinement_mode_aliases():
 
 
 def test_all_refinement_variants_preserve_vessels_and_crossings():
-    logits = np.full((48, 48, 7), -8.0, dtype=np.float32)
+    logits = np.full((48, 48, 4), -8.0, dtype=np.float32)
     logits[23:26, 5:43, 0] = 8.0
     logits[5:43, 23:26, 0] = 8.0
     logits[23:26, 5:43, 1] = 3.0
@@ -161,7 +197,7 @@ def test_all_refinement_variants_preserve_vessels_and_crossings():
 
 
 def test_simple_scores_segments_without_directional_reconnection():
-    logits = np.full((64, 64, 7), -8.0, dtype=np.float32)
+    logits = np.full((64, 64, 4), -8.0, dtype=np.float32)
     logits[30:33, 5:59, 0] = 8.0
     logits[5:59, 30:33, 0] = 8.0
     # The weak right-hand segment disagrees with the strong opposite segment.

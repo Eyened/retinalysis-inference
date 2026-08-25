@@ -1,9 +1,14 @@
 import numpy as np
 import pandas as pd
 import torch
+from pydantic import model_validator
 from tqdm import tqdm
 
-from rtnls_inference.utils import decollate_batch
+from rtnls_inference.ensembles.predict_output import (
+    PredictFullOutput,
+    decollate_predict_full,
+    require_rank,
+)
 
 from .base import FundusEnsemble
 
@@ -13,24 +18,38 @@ def softmax(logits):
     return exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
 
 
+class RegressionPredictFull(PredictFullOutput):
+    @model_validator(mode="after")
+    def validate_regression(self):
+        require_rank(self.prediction, 3, "prediction")
+        require_rank(self.aggregate, 2, "aggregate")
+        if self.prediction.shape[2:] != self.aggregate.shape[1:]:
+            raise ValueError("member and aggregate output shapes differ")
+        return self
+
+
 class RegressionEnsemble(FundusEnsemble):
+    predict_full_model = RegressionPredictFull
+
     def forward(self, img):
-        """Returns output tensor with shape MN where M=nfolds, the number of models"""
-        return self.ensemble(img).cpu().detach()
+        """Return backend member predictions, normally MNC."""
+        return self.ensemble(img)
 
-    def predict_step(self, batch):
-        return self.forward(batch)
+    def _predict_member_tensors(self, batch):
+        prediction = self.forward(batch["image"])
+        if prediction.ndim == 2:
+            prediction = prediction[..., None]
+        if prediction.ndim != 3:
+            raise ValueError(
+                f"Regression backend must return MNC, got {prediction.shape}"
+            )
+        return prediction.permute(1, 0, 2)
 
-    def _predict_batch(self, batch: dict) -> list[dict]:
-        """Run regression inference for a batch and return decollated outputs."""
-        images = batch["image"].to(self.get_device())
-        preds = self.forward(images)
-        preds = torch.mean(preds, dim=0)
-        items = {
-            "id": batch["id"],
-            "prediction": preds,
-        }
-        return decollate_batch(items)
+    def _compatibility_items(self, full_output):
+        return [
+            {"id": item.get("id"), "prediction": item["aggregate"]}
+            for item in decollate_predict_full(full_output)
+        ]
 
     def _predict_dataloader(self, dataloader, dest_path):
         with torch.no_grad():
@@ -40,7 +59,7 @@ class RegressionEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                batch_items = self._predict_batch(batch)
+                batch_items = self._compatibility_items(self.predict_step_full(batch))
                 if not batch_items:
                     continue
                 batch_ids.extend(item["id"] for item in batch_items)
@@ -48,6 +67,8 @@ class RegressionEnsemble(FundusEnsemble):
                     np.stack([item["prediction"] for item in batch_items], axis=0)
                 )
 
+        if not batch_preds:
+            return pd.DataFrame(index=batch_ids)
         batch_preds = np.concatenate(batch_preds, axis=0)
         return pd.DataFrame(
             batch_preds,

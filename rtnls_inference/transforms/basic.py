@@ -1,4 +1,5 @@
 import albumentations as A
+import numpy as np
 
 from .base import TestTransform
 
@@ -34,4 +35,7 @@ class BasicTestTransform(TestTransform):
         return item
 
     def _transform(self, preprocess=None, **item):
-        return self.transform(**item)
+        preprocessed_image = np.asarray(item["image"], dtype=np.uint8).copy()
+        item = self.transform(**item)
+        item["preprocessed_image"] = preprocessed_image
+        return item

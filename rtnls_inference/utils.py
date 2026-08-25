@@ -117,6 +117,10 @@ def decollate_batch(batch):
             return decollated_val
         elif isinstance(val, dict):
             return decollate_batch(val)
+        elif isinstance(val, np.ndarray):
+            if val.size == 1:
+                return val.item()
+            return val
         elif isinstance(val, list):
             return [convert(item) for item in val]
         else:
@@ -132,6 +136,8 @@ def decollate_batch(batch):
         elif isinstance(batch, list):
             return convert(batch[index])
         elif isinstance(batch, torch.Tensor):
+            return convert(batch[index])
+        elif isinstance(batch, np.ndarray):
             return convert(batch[index])
         else:
             return batch
@@ -181,24 +187,17 @@ def format_keypoints_to_tensor(keypoints: Any) -> torch.Tensor:
 
 
 def extract_keypoints_from_heatmaps(heatmaps):
-    """Input shape: NMCHW (n_models, batch_size, num_keypoints, height, width)
-    Output shape: NMC2
+    """Input shape: NMKHW (batch, members, keypoints, height, width).
+
+    Output shape: NMK2.
     """
-    batch_size, n_models, num_keypoints, _, _ = heatmaps.shape
-    outputs = torch.zeros(batch_size, n_models, num_keypoints, 2, dtype=torch.float32)
-
-    for b in range(batch_size):
-        for m in range(n_models):
-            for i in range(num_keypoints):
-                heatmap = heatmaps[b, m, i]
-                max_idx = torch.argmax(heatmap)
-
-                n_cols = heatmap.shape[1]
-                row = max_idx // n_cols
-                col = max_idx % n_cols
-
-                outputs[b, m, i] = torch.tensor([col.item() + 0.5, row.item() + 0.5])
-    return outputs
+    if heatmaps.ndim != 5:
+        raise ValueError(f"Expected NMKHW heatmaps, got {heatmaps.shape}")
+    width = heatmaps.shape[-1]
+    indices = heatmaps.flatten(start_dim=-2).argmax(dim=-1)
+    rows = torch.div(indices, width, rounding_mode="floor")
+    columns = indices.remainder(width)
+    return torch.stack((columns, rows), dim=-1).to(torch.float32) + 0.5
 
 
 def load_image_pil(path: Union[Path, str]) -> Image.Image:
@@ -214,6 +213,7 @@ def read_file_bytes(path: Union[Path, str]) -> bytes:
     if isinstance(path, str):
         path = Path(path)
     return path.read_bytes()
+
 
 def load_image_from_bytes(
     data: bytes,
@@ -251,7 +251,11 @@ def find_release_file(
     release_path: str | Path,
     prefer: str | None = None,
 ) -> Path:
-    """Resolve a release path to an existing .pt or .onnx file."""
+    """Resolve a release path to an existing .pt or .onnx file.
+
+    Supports legacy flat files (`<name>.pt`) and foldered releases
+    (`<name>/<name>.pt`).
+    """
     if not isinstance(release_path, Path):
         release_path = Path(release_path)
 
@@ -259,18 +263,20 @@ def find_release_file(
 
     pt_path = release_path.with_suffix(".pt")
     onnx_path = release_path.with_suffix(".onnx")
+    nested_pt = release_path / f"{release_path.name}.pt"
+    nested_onnx = release_path / f"{release_path.name}.onnx"
     if prefer == "onnx":
-        candidates = [onnx_path, pt_path]
+        candidates = [onnx_path, nested_onnx, pt_path, nested_pt]
     else:
-        candidates = [pt_path, onnx_path]
+        candidates = [pt_path, nested_pt, onnx_path, nested_onnx]
 
     for path in candidates:
         if path.exists():
             return path
 
+    tried = ", ".join(str(path) for path in candidates)
     raise ValueError(
-        f"No release file found for release path {release_path} "
-        f"(tried {pt_path.name} and {onnx_path.name})"
+        f"No release file found for release path {release_path} (tried {tried})"
     )
 
 

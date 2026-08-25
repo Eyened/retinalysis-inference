@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from rtnls_inference.artery_vein import load_av_head_logits
+from rtnls_inference.artery_vein import AV_HEAD_NAMES, load_av_head_logits
 from rtnls_inference.readers import BinaryMaskReader, MaskReader
 from rtnls_inference.transforms.base import TestTransform
 from rtnls_inference.utils import (
@@ -75,8 +75,6 @@ class FundusTestDataset(TestDataset):
         fpath = entry.get("head_logits")
         if fpath is None:
             return None
-        if entry.get("mask") is not None:
-            raise ValueError("mask and head_logits are mutually exclusive")
         return load_av_head_logits(fpath)
 
     def _open_masks_multilabel(self, idx):
@@ -97,7 +95,9 @@ class FundusTestDataset(TestDataset):
         if not torch.is_tensor(masks):
             masks = torch.as_tensor(masks)
         if masks.ndim != 3:
-            raise ValueError(f"masks_multilabel must have 3 dimensions, got {masks.shape}")
+            raise ValueError(
+                f"masks_multilabel must have 3 dimensions, got {masks.shape}"
+            )
         if masks.shape[0] > masks.shape[-1]:
             masks = masks.permute(2, 0, 1)
         return masks.float()
@@ -127,10 +127,13 @@ class FundusTestDataset(TestDataset):
             logits = torch.as_tensor(logits)
         if logits.ndim != 3:
             raise ValueError(f"head_logits must have 3 dimensions, got {logits.shape}")
-        if logits.shape[-1] == 7:
+        if logits.shape[-1] == len(AV_HEAD_NAMES):
             logits = logits.permute(2, 0, 1)
-        elif logits.shape[0] != 7:
-            raise ValueError(f"head_logits must have seven channels, got {logits.shape}")
+        elif logits.shape[0] != len(AV_HEAD_NAMES):
+            raise ValueError(
+                f"head_logits must have {len(AV_HEAD_NAMES)} channels, got "
+                f"{logits.shape}"
+            )
         return logits.float()
 
     def _open_input_mask(self, idx):

@@ -3,21 +3,17 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from rtnls_inference.utils import decollate_batch
+from rtnls_inference.ensembles.predict_output import decollate_predict_full
 
 from .ensemble_regression import RegressionEnsemble
 
 
 class ClassificationEnsemble(RegressionEnsemble):
-    def _predict_batch(self, batch: dict) -> list[dict]:
-        """Run classification inference for a batch and return decollated outputs."""
-        logits = self.forward(batch["image"].to(self.get_device()))  # shape: MNC
-        logits = torch.mean(logits, dim=0)  # match inference.py: average logits only
-        items = {
-            "id": batch["id"],
-            "logits": logits,
-        }
-        return decollate_batch(items)
+    def _compatibility_items(self, full_output):
+        return [
+            {"id": item.get("id"), "logits": item["aggregate"]}
+            for item in decollate_predict_full(full_output)
+        ]
 
     def _predict_dataloader(self, dataloader, dest_path):
         with torch.no_grad():
@@ -27,7 +23,7 @@ class ClassificationEnsemble(RegressionEnsemble):
                 if len(batch) == 0:
                     continue
 
-                batch_items = self._predict_batch(batch)
+                batch_items = self._compatibility_items(self.predict_step_full(batch))
                 if not batch_items:
                     continue
                 batch_ids.extend(item["id"] for item in batch_items)
@@ -35,6 +31,8 @@ class ClassificationEnsemble(RegressionEnsemble):
                     np.stack([item["logits"] for item in batch_items], axis=0)
                 )
 
+        if not batch_preds:
+            return pd.DataFrame(index=batch_ids)
         batch_preds = np.concatenate(batch_preds, axis=0)
         return pd.DataFrame(
             batch_preds,

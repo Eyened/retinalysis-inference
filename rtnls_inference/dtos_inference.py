@@ -7,6 +7,40 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class SampleMetadataDTO(BaseModel):
+    """Per-sample metadata passed through dataloaders.
+
+    Extra keys such as `bounds` are allowed. `source` names the originating
+    dataset when present and is used to stratify release evaluation.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    source: Optional[str] = Field(
+        default=None,
+        description="Optional dataset or collection name used to stratify evaluation.",
+    )
+
+
+def source_from_metadata(item: Any) -> Optional[str]:
+    """Return metadata.source from a DTO, dumped dict, or collated batch item."""
+    metadata = None
+    if isinstance(item, dict):
+        metadata = item.get("metadata")
+    else:
+        metadata = getattr(item, "metadata", None)
+    if metadata is None:
+        return None
+    if isinstance(metadata, dict):
+        source = metadata.get("source")
+    else:
+        source = getattr(metadata, "source", None)
+    if source is None:
+        return None
+    source = str(source).strip()
+    return source or None
+
+
 class ModelInputDTO(BaseModel):
     """Validated representation of a single inference input."""
 
@@ -23,9 +57,9 @@ class ModelInputDTO(BaseModel):
         default=None,
         description="Path to an optional input segmentation mask (binary).",
     )
-    metadata: Optional[Any] = Field(
+    metadata: Optional[SampleMetadataDTO] = Field(
         default=None,
-        description="Arbitrary metadata that should be kept alongside the sample.",
+        description="Optional sample metadata. Set metadata.source to name the originating dataset.",
     )
     fov: Optional[float] = Field(
         default=None, description="Optional field-of-view measurement."

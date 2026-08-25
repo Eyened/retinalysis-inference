@@ -58,5 +58,8 @@ class TestTransform:
 
     def __call__(self, preprocess: bool = None, **item):
         item = self._transform(preprocess=preprocess, **item)
+        preprocessed_image = item.pop("preprocessed_image", None)
         item = self.post_transform(**item)
+        if preprocessed_image is not None:
+            item["preprocessed_image"] = preprocessed_image
         return item

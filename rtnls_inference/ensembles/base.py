@@ -1,8 +1,13 @@
 import json
+import warnings
+from collections.abc import Mapping
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import lightning as L
+import numpy as np
 import pandas as pd
 import torch
 from huggingface_hub import HfApi, hf_hub_download
@@ -11,14 +16,24 @@ from torch.utils.data import DataLoader
 from rtnls_inference.datasets.fundus import (
     FundusTestDataset,
 )
-from rtnls_inference.readers import make_mask_reader
-from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.ensembles.onnx_backend import OnnxEnsembleBackend
+from rtnls_inference.ensembles.predict_output import (
+    PredictFullOutput,
+    canonical_context,
+    decollate_predict_full,
+    to_numpy,
+    validate_predict_full,
+)
+from rtnls_inference.readers import make_mask_reader
 from rtnls_inference.release_config import update_stored_config
+from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import collate_except_metadata
 
 
 class Ensemble(L.LightningModule):
+    predict_full_model = PredictFullOutput
+    autocast_inference = False
+
     def __init__(
         self, ensemble: L.LightningModule, config: dict, fpath: Path | str = None
     ):
@@ -98,6 +113,112 @@ class Ensemble(L.LightningModule):
         if next(self.parameters(), None) is not None:
             return next(self.parameters()).device
         return torch.device("cpu")
+
+    @staticmethod
+    def _require_batch(batch: Mapping[str, Any]) -> None:
+        if not isinstance(batch, Mapping):
+            raise TypeError("predict_step requires a mapping containing 'image'")
+        if "image" not in batch:
+            raise KeyError("predict_step requires batch['image']")
+        if not isinstance(batch["image"], torch.Tensor):
+            raise TypeError("batch['image'] must be a torch.Tensor")
+        if batch["image"].ndim != 4:
+            raise ValueError(f"batch['image'] must be NCHW, got {batch['image'].shape}")
+
+    def _model_batch(self, batch: Mapping[str, Any]) -> dict[str, Any]:
+        """Move model input tensors only; leave IDs and canonical context on CPU."""
+        self._require_batch(batch)
+        model_batch = dict(batch)
+        model_batch["image"] = batch["image"].to(self.get_device())
+        return model_batch
+
+    def _autocast_context(self):
+        device = self.get_device()
+        if self.autocast_inference and device.type == "cuda":
+            return torch.autocast(device_type="cuda")
+        return nullcontext()
+
+    def _predict_member_tensors(self, batch: Mapping[str, Any]) -> torch.Tensor:
+        raise NotImplementedError
+
+    def _aggregate_tensors(self, member_output: torch.Tensor) -> torch.Tensor:
+        return member_output.mean(dim=1)
+
+    def _predict_step_tensors(self, batch: Mapping[str, Any]) -> dict[str, Any]:
+        prediction = self._predict_member_tensors(batch)
+        aggregate = self._aggregate_tensors(prediction)
+        return {"prediction": prediction, "aggregate": aggregate}
+
+    def _prediction_size(
+        self, batch: Mapping[str, Any], output: Mapping[str, Any]
+    ) -> tuple[int, int] | None:
+        return None
+
+    @torch.no_grad()
+    def predict_step(
+        self, batch: Mapping[str, Any], batch_idx: int | None = None
+    ) -> torch.Tensor:
+        """Return the member-aggregated tensor-safe prediction on its device."""
+        del batch_idx
+        model_batch = self._model_batch(batch)
+        with self._autocast_context():
+            output = self._predict_step_tensors(model_batch)
+        aggregate = output["aggregate"]
+        if not isinstance(aggregate, torch.Tensor):
+            raise TypeError("_predict_step_tensors()['aggregate'] must be a tensor")
+        return aggregate.detach()
+
+    @torch.no_grad()
+    def predict_step_full(
+        self, batch: Mapping[str, Any], batch_idx: int | None = None
+    ) -> dict[str, Any]:
+        """Return validated batch-major NumPy predictions and inspection context."""
+        del batch_idx
+        self._require_batch(batch)
+        model_batch = self._model_batch(batch)
+        with self._autocast_context():
+            tensor_output = self._predict_step_tensors(model_batch)
+        output = to_numpy(tensor_output)
+        batch_size = int(np.asarray(output["aggregate"]).shape[0])
+        output.update(
+            canonical_context(
+                batch,
+                batch_size=batch_size,
+                prediction_size=self._prediction_size(model_batch, tensor_output),
+            )
+        )
+        return validate_predict_full(self.predict_full_model, output)
+
+    def postprocess_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Convert one full-output item to its canonical public representation."""
+        result = {
+            "id": item.get("id"),
+            "output": np.asarray(item["aggregate"]),
+            "output_kind": "prediction",
+            "output_space": "preprocessed",
+            "geometry": item["geometry"],
+        }
+        if "preprocessed_image" in item:
+            result["preprocessed_image"] = item["preprocessed_image"]
+        return result
+
+    def _compatibility_items(
+        self, full_output: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        return [
+            {"id": item.get("id"), "prediction": item["aggregate"]}
+            for item in decollate_predict_full(full_output)
+        ]
+
+    def _predict_batch(self, batch: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Deprecated prediction-geometry adapter for legacy integrations."""
+        warnings.warn(
+            "_predict_batch is deprecated; use predict_step_full and decollate the "
+            "batch-major NumPy output",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return self._compatibility_items(self.predict_step_full(batch))
 
     def save_stored_config(
         self,

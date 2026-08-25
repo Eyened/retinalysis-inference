@@ -1,5 +1,6 @@
 import albumentations as A
 import cv2
+import numpy as np
 import torch
 from rtnls_fundusprep.mask_extraction import CFIBounds as Bounds
 from rtnls_fundusprep.mask_extraction import get_cfi_bounds
@@ -93,6 +94,9 @@ class FundusTestTransform(TestTransform):
             # hack: make sure that 'ce' is not passed when it comes from the dataset
             if "ce" in item:
                 item.pop("ce")
+
+        # Public spatial reference: RGB before model resize/normalization/CE/CHW.
+        item["preprocessed_image"] = np.asarray(item["image"], dtype=np.uint8).copy()
 
         # serialize the bounds
         # cannot pass arbitrary objects to the dataloader

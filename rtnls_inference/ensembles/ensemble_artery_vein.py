@@ -6,10 +6,11 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from pytorch_lightning.utilities import move_data_to_device
+from pydantic import Field, model_validator
 from scipy import ndimage
 from skimage.measure import label as connected_labels
 from skimage.morphology import binary_dilation, disk, skeletonize
@@ -17,7 +18,13 @@ from tqdm import tqdm
 
 from rtnls_inference.artery_vein import (
     AV_HEAD_NAMES,
-    save_av_head_logits,
+)
+from rtnls_inference.ensembles.predict_output import (
+    PredictFullOutput,
+    decollate_predict_full,
+    output_manifest_row,
+    require_rank,
+    restore_array_to_preprocessed,
 )
 
 from .base import FundusEnsemble
@@ -184,18 +191,17 @@ def normalize_refinement_mode(mode: str) -> str:
 def resolve_artery_vein_refinement_config(
     inference_config: Mapping | None,
 ) -> tuple[str, dict[str, float | int]]:
-    """Resolve the shared AV refinement mode and parameters from inference config."""
-    graph_config = (inference_config or {}).get("graph_refinement", {})
-    mode = normalize_refinement_mode(str(graph_config.get("mode", "full")))
+    """Return defaults while ignoring legacy embedded refinement configuration."""
+    del inference_config
     kwargs = {
-        "vessel_threshold": float(graph_config.get("vessel_threshold", 0.5)),
-        "crossing_threshold": float(graph_config.get("crossing_threshold", 0.5)),
-        "crossing_radius": int(graph_config.get("crossing_radius", 3)),
-        "node_radius": int(graph_config.get("node_radius", 1)),
-        "min_component_size": int(graph_config.get("min_component_size", 10)),
-        "relabel_margin": float(graph_config.get("relabel_margin", 0.15)),
+        "vessel_threshold": 0.5,
+        "crossing_threshold": 0.5,
+        "crossing_radius": 3,
+        "node_radius": 1,
+        "min_component_size": 10,
+        "relabel_margin": 0.15,
     }
-    return mode, kwargs
+    return "basic", kwargs
 
 
 def _sigmoid(value: np.ndarray) -> np.ndarray:
@@ -496,8 +502,74 @@ def refine_artery_vein(
     return refine_artery_vein_graph_full(logits, **full_kwargs)
 
 
+class ArteryVeinPredictFull(PredictFullOutput):
+    logits: np.ndarray = Field(
+        description="Ensemble-averaged four-head logits as NHW4."
+    )
+    logit_names: tuple[str, ...] = Field(
+        description="Names corresponding to the final logits axis."
+    )
+    refinement_mode: str = Field(
+        description="Configured CPU artery/vein refinement mode."
+    )
+    refinement_parameters: dict[str, float | int] = Field(
+        description="Parameters used for per-item artery/vein refinement."
+    )
+
+    @model_validator(mode="after")
+    def validate_artery_vein(self):
+        require_rank(self.prediction, 5, "prediction")
+        require_rank(self.logits, 4, "logits")
+        require_rank(self.aggregate, 4, "aggregate")
+        if self.prediction.shape[-1] != len(AV_HEAD_NAMES) or self.logits.shape[
+            -1
+        ] != len(AV_HEAD_NAMES):
+            raise ValueError(
+                f"AV member and averaged logits must have {len(AV_HEAD_NAMES)} heads"
+            )
+        if self.aggregate.shape[-1] != 4:
+            raise ValueError("AV aggregate must contain four class probabilities")
+        if self.prediction.shape[2:4] != self.logits.shape[1:3]:
+            raise ValueError("AV member and averaged logits spatial sizes differ")
+        if self.aggregate.shape[:3] != self.logits.shape[:3]:
+            raise ValueError("AV probabilities and logits spatial sizes differ")
+        if tuple(self.logit_names) != tuple(AV_HEAD_NAMES):
+            raise ValueError("AV logit_names do not match AV_HEAD_NAMES")
+        if not all(
+            np.issubdtype(value.dtype, np.floating)
+            for value in (self.prediction, self.aggregate, self.logits)
+        ):
+            raise ValueError("AV predictions and logits must be floating point")
+        return self
+
+
 class ArteryVeinSegmentationEnsemble(FundusEnsemble):
     """Halo-tile AV inference, native head export, and graph refinement."""
+
+    predict_full_model = ArteryVeinPredictFull
+    autocast_inference = True
+
+    def __init__(
+        self,
+        *args,
+        refinement_mode: str | None = None,
+        refinement_parameters: Mapping[str, float | int] | None = None,
+        **kwargs,
+    ):
+        """Create an AV ensemble with optional CPU graph refinement.
+
+        Refinement is a runtime concern and is deliberately not read from the
+        embedded model configuration. ``None`` selects basic per-pixel AV
+        decoding without graph refinement.
+        """
+        super().__init__(*args, **kwargs)
+        self.refinement_mode = normalize_refinement_mode(refinement_mode or "basic")
+        _, defaults = resolve_artery_vein_refinement_config(None)
+        parameters = dict(refinement_parameters or {})
+        unknown = set(parameters) - set(defaults)
+        if unknown:
+            raise ValueError(f"Unknown AV refinement parameters: {sorted(unknown)}")
+        self.refinement_parameters = {**defaults, **parameters}
 
     def _halo_logits(self, image: torch.Tensor) -> torch.Tensor:
         inference = self.config.get("inference", {})
@@ -522,22 +594,22 @@ class ArteryVeinSegmentationEnsemble(FundusEnsemble):
             logits += torch.flip(flipped, dims=[axis + 1 for axis in axes])
         return logits / (len(inference.get("tta_flips", [[2], [3], [2, 3]])) + 1)
 
-    def predict_head_logits_step(self, batch, batch_idx=None) -> torch.Tensor:
-        return self.forward(batch["image"]).mean(dim=1).permute(0, 2, 3, 1)
-
     def _refinement_config(self) -> tuple[str, dict]:
-        return resolve_artery_vein_refinement_config(self.config.get("inference"))
+        return self.refinement_mode, dict(self.refinement_parameters)
 
-    def predict_step(self, batch, batch_idx=None):
-        logits = self.predict_head_logits_step(batch, batch_idx)
-        heads = torch.sigmoid(logits)
-        vessel = heads[..., 0]
-        crossing = heads[..., 3]
+    def _predict_member_tensors(self, batch):
+        return self.forward(batch["image"]).permute(0, 1, 3, 4, 2)
+
+    def _aggregate_tensors(self, member_output):
+        logits = member_output.mean(dim=1)
+        head_probabilities = torch.sigmoid(logits)
+        vessel = head_probabilities[..., 0]
+        crossing = head_probabilities[..., 3]
         av_fraction = torch.softmax(logits[..., 1:3], dim=-1)
         background = 1.0 - vessel
         crossing_class = vessel * crossing
         remaining = vessel * (1.0 - crossing)
-        legacy = torch.stack(
+        return torch.stack(
             [
                 background,
                 remaining * av_fraction[..., 0],
@@ -546,113 +618,101 @@ class ArteryVeinSegmentationEnsemble(FundusEnsemble):
             ],
             dim=-1,
         )
+
+    def _predict_step_tensors(self, batch):
+        prediction = self._predict_member_tensors(batch)
+        logits = prediction.mean(dim=1)
+        aggregate = self._aggregate_tensors(prediction)
         refinement_mode, refinement_kwargs = self._refinement_config()
-        selected_masks = [
-            refine_artery_vein(
-                sample.detach().cpu().numpy(),
-                refinement_mode,
-                **refinement_kwargs,
-            )
-            for sample in logits
-        ]
         return {
-            "image": legacy,
-            "heads": {name: heads[..., idx] for idx, name in enumerate(AV_HEAD_NAMES)},
-            "head_logits": logits,
+            "prediction": prediction,
+            "aggregate": aggregate,
+            "logits": logits,
+            "logit_names": tuple(AV_HEAD_NAMES),
             "refinement_mode": refinement_mode,
-            "refined_mask": torch.as_tensor(
-                np.stack(selected_masks), device=logits.device, dtype=torch.uint8
-            ),
+            "refinement_parameters": refinement_kwargs,
         }
 
-    def _predict_output_batch(self, batch: dict) -> list[dict]:
-        with torch.autocast(device_type=self.get_device().type):
-            device_batch = move_data_to_device(batch, self.get_device())
-            output = self.predict_step(device_batch)
+    def _prediction_size(self, batch, output):
+        aggregate = output["aggregate"]
+        return int(aggregate.shape[1]), int(aggregate.shape[2])
+
+    def postprocess_item(self, item):
+        refined = refine_artery_vein(
+            np.asarray(item["logits"]),
+            item["refinement_mode"],
+            **item["refinement_parameters"],
+        )
+        restored_mask = restore_array_to_preprocessed(
+            refined, item["geometry"], "nearest"
+        ).astype(np.uint8, copy=False)
+        result = {
+            "id": item.get("id"),
+            "output": restored_mask,
+            "refined_mask": restored_mask,
+            "output_kind": "artery_vein_mask",
+            "output_space": "preprocessed",
+            "geometry": item["geometry"],
+            "refinement_mode": item["refinement_mode"],
+        }
+        if "preprocessed_image" in item:
+            result["preprocessed_image"] = item["preprocessed_image"]
+        if self.config.get("inference", {}).get(
+            "return_postprocess_intermediates", False
+        ):
+            result["probabilities"] = restore_array_to_preprocessed(
+                item["aggregate"], item["geometry"], "bilinear"
+            )
+            result["logits"] = restore_array_to_preprocessed(
+                item["logits"], item["geometry"], "bilinear"
+            )
+            result["logit_names"] = item["logit_names"]
+        return result
+
+    def _compatibility_items(self, full_output):
         items = []
-        for index, identifier in enumerate(batch["id"]):
-            item = {
-                "id": identifier,
-                "image": output["image"][index].detach().cpu().numpy(),
-                "heads": {
-                    name: value[index].detach().cpu().numpy()
-                    for name, value in output["heads"].items()
-                },
-                "head_logits": output["head_logits"][index].detach().cpu().numpy(),
-                "refinement_mode": output["refinement_mode"],
-                "refined_mask": output["refined_mask"][index].detach().cpu().numpy(),
-            }
-            if "metadata" in batch:
-                item["metadata"] = batch["metadata"][index]
-            items.append(item)
+        for item in decollate_predict_full(full_output):
+            refined = refine_artery_vein(
+                item["logits"],
+                item["refinement_mode"],
+                **item["refinement_parameters"],
+            )
+            head_probabilities = 1.0 / (1.0 + np.exp(-item["logits"]))
+            items.append(
+                {
+                    "id": item.get("id"),
+                    "image": item["aggregate"],
+                    "heads": {
+                        name: head_probabilities[..., index]
+                        for index, name in enumerate(AV_HEAD_NAMES)
+                    },
+                    "head_logits": item["logits"],
+                    "refinement_mode": item["refinement_mode"],
+                    "refined_mask": refined,
+                }
+            )
         return items
+
+    def _predict_output_batch(self, batch: dict) -> list[dict]:
+        return [
+            self.postprocess_item(item)
+            for item in decollate_predict_full(self.predict_step_full(batch))
+        ]
 
     @staticmethod
     def _save_item(item: dict, dest_path: str | Path):
         Image.fromarray(item["refined_mask"].astype(np.uint8)).save(dest_path)
 
-    @staticmethod
-    def _undo_array(item: dict, value: np.ndarray, transform) -> np.ndarray:
-        payload = {"image": value}
-        if "metadata" in item:
-            payload["metadata"] = item["metadata"]
-        return transform.undo_item(payload)["image"]
-
     def _predict_dataloader(self, dataloader, dest_path):
+        if dest_path is None:
+            raise ValueError("dest_path is required for spatial prediction output")
         os.makedirs(dest_path, exist_ok=True)
-        with torch.no_grad():
-            for batch in tqdm(dataloader):
-                if not batch:
-                    continue
-                for item in self._predict_output_batch(batch):
-                    one_hot = np.eye(4, dtype=np.float32)[item["refined_mask"]]
-                    item["refined_mask"] = np.argmax(
-                        self._undo_array(item, one_hot, dataloader.dataset.transform),
-                        axis=-1,
-                    ).astype(np.uint8)
-                    self._save_item(item, Path(dest_path) / f"{item['id']}.png")
-
-    def _predict_head_logits_dataloader(
-        self,
-        dataloader,
-        dest_path: str | Path,
-        dtype: np.dtype | type = np.float16,
-    ):
-        os.makedirs(dest_path, exist_ok=True)
-        with torch.no_grad():
-            for batch in tqdm(dataloader):
-                if not batch:
-                    continue
-                for item in self._predict_output_batch(batch):
-                    logits = self._undo_array(
-                        item,
-                        item["head_logits"],
-                        dataloader.dataset.transform,
-                    )
-                    save_av_head_logits(
-                        Path(dest_path) / f"{item['id']}.npz",
-                        logits,
-                        dtype=dtype,
-                    )
-
-    def predict_head_logits_dataset(
-        self, data, dest_path, num_workers=0, batch_size=None, dtype=np.float16
-    ):
-        dataloader = self._make_inference_dataloader(
-            {"images": data},
-            num_workers=num_workers,
-            preprocess=True,
-            batch_size=batch_size,
-        )
-        return self._predict_head_logits_dataloader(dataloader, dest_path, dtype)
-
-    def predict_head_logits_preprocessed(
-        self, data, dest_path, num_workers=0, batch_size=None, dtype=np.float16
-    ):
-        dataloader = self._make_inference_dataloader(
-            {"images": data},
-            num_workers=num_workers,
-            preprocess=False,
-            batch_size=batch_size,
-        )
-        return self._predict_head_logits_dataloader(dataloader, dest_path, dtype)
+        manifest = []
+        for batch in tqdm(dataloader):
+            if not batch:
+                continue
+            for item in self._predict_output_batch(batch):
+                fpath = Path(dest_path) / f"{item['id']}.png"
+                self._save_item(item, fpath)
+                manifest.append(output_manifest_row(item, str(fpath)))
+        return pd.DataFrame(manifest)

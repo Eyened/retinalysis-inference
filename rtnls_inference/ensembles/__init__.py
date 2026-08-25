@@ -16,6 +16,9 @@ from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble  # no
 from rtnls_inference.ensembles.ensemble_heatmap_regression import (  # noqa: F401
     HeatmapRegressionEnsemble,
 )
+from rtnls_inference.ensembles.ensemble_halo_segmentation import (  # noqa: F401
+    HaloSegmentationEnsemble,
+)
 from rtnls_inference.ensembles.ensemble_keypoints import KeypointsEnsemble  # noqa: F401
 from rtnls_inference.ensembles.ensemble_lunet_artery_vein import (  # noqa: F401
     LUNetArteryVeinEnsemble,
@@ -32,6 +35,13 @@ from rtnls_inference.ensembles.ensemble_segmentation_overlaps import (  # noqa: 
 from rtnls_inference.ensembles.onnx_backend import (
     OnnxEnsembleBackend,
     load_config_from_onnx,
+)
+from rtnls_inference.ensembles.predict_output import (  # noqa: F401
+    PredictFullOutput,
+    PredictionGeometry,
+    decollate_predict_full,
+    restore_array_to_preprocessed,
+    restore_points_to_preprocessed,
 )
 from rtnls_inference.release_config import load_stored_config, update_stored_config
 from rtnls_inference.utils import find_release_file, get_all_subclasses_dict
@@ -66,7 +76,11 @@ def get_ensemble_class(config) -> type[Ensemble]:
     return ensemble_class
 
 
-def make_ensemble(release_path: str | Path, prefer: str | None = None) -> Ensemble:
+def make_ensemble(
+    release_path: str | Path,
+    prefer: str | None = None,
+    **ensemble_kwargs,
+) -> Ensemble:
     release_file = find_release_file(release_path, prefer=prefer)
 
     if release_file.suffix == ".onnx":
@@ -79,16 +93,18 @@ def make_ensemble(release_path: str | Path, prefer: str | None = None) -> Ensemb
         config = json.loads(extra_files["config.yaml"])
 
     ensemble_class = get_ensemble_class(config)
-    return ensemble_class(ensemble, config, release_path)
+    return ensemble_class(ensemble, config, release_file, **ensemble_kwargs)
 
 
 def make_ensemble_name(
     release_name: str | Path,
     prefer: str | None = None,
+    **ensemble_kwargs,
 ) -> Ensemble:
     return make_ensemble(
         os.path.join(os.environ["RTNLS_MODEL_RELEASES"], release_name),
         prefer=prefer,
+        **ensemble_kwargs,
     )
 
 
@@ -96,6 +112,7 @@ def make_ensemble_from_checkpoints(
     checkpoint_name: str | None = None,
     checkpoints: str | Path | Sequence[str | Path] | None = None,
     map_location: str | torch.device = "cpu",
+    **ensemble_kwargs,
 ) -> Ensemble:
     """Load an inference ensemble directly from training checkpoints."""
     try:
@@ -126,4 +143,4 @@ def make_ensemble_from_checkpoints(
 
     wrapper = wrapper.eval()
     ensemble_class = get_ensemble_class(wrapper.config)
-    return ensemble_class(wrapper, wrapper.config, source)
+    return ensemble_class(wrapper, wrapper.config, source, **ensemble_kwargs)

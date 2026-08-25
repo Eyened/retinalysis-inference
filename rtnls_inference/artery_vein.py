@@ -5,15 +5,12 @@ from pathlib import Path
 
 import numpy as np
 
-AV_HEAD_LOGITS_SCHEMA_VERSION = 1
+AV_HEAD_LOGITS_SCHEMA_VERSION = 2
 AV_HEAD_NAMES = (
     "vesselness",
     "artery",
     "vein",
     "crossing",
-    "centerline_vessel",
-    "centerline_artery",
-    "centerline_vein",
 )
 
 
@@ -73,7 +70,7 @@ def save_av_head_logits(
         value = np.asarray(logits)
         if value.ndim != 3 or value.shape[-1] != len(AV_HEAD_NAMES):
             raise ValueError(
-                f"AV logits must have HWC shape with seven channels, got {value.shape}"
+                f"AV logits must have HWC shape with four channels, got {value.shape}"
             )
         arrays = {name: value[..., idx] for idx, name in enumerate(AV_HEAD_NAMES)}
 
@@ -100,7 +97,7 @@ def av_logits_to_legacy_probabilities(logits: np.ndarray) -> np.ndarray:
     """Project vessel, conditional A/V, and crossing logits to four classes."""
     logits = np.asarray(logits)
     if logits.shape[-1] != len(AV_HEAD_NAMES):
-        raise ValueError(f"Expected seven AV logits, got shape {logits.shape}")
+        raise ValueError(f"Expected four AV logits, got shape {logits.shape}")
     vessel = 1.0 / (1.0 + np.exp(-np.clip(logits[..., 0], -80.0, 80.0)))
     crossing = 1.0 / (1.0 + np.exp(-np.clip(logits[..., 3], -80.0, 80.0)))
     av_logits = logits[..., 1:3]

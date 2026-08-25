@@ -1,18 +1,49 @@
+import numpy as np
 import pandas as pd
 import torch
 from monai.inferers import sliding_window_inference
+from pydantic import Field, model_validator
 from tqdm import tqdm
 
-from rtnls_inference.ensembles.base import FundusEnsemble
+from rtnls_inference.ensembles.ensemble_keypoints import (
+    KeypointsEnsemble,
+    KeypointsPredictFull,
+)
+from rtnls_inference.ensembles.predict_output import (
+    decollate_predict_full,
+)
 from rtnls_inference.ensembles.utils import EnsembleSplitter
-from rtnls_inference.utils import decollate_batch, extract_keypoints_from_heatmaps
+from rtnls_inference.utils import extract_keypoints_from_heatmaps
 
 
 def flip(data, axis):
     return torch.flip(data, dims=axis)
 
 
-class HeatmapRegressionEnsemble(FundusEnsemble):
+class HeatmapRegressionPredictFull(KeypointsPredictFull):
+    """Keypoint predictions with optional per-member heatmaps."""
+
+    heatmaps: np.ndarray | None = Field(
+        default=None,
+        description="Optional per-member heatmaps as NMKHW.",
+    )
+
+    @model_validator(mode="after")
+    def validate_heatmaps(self):
+        if self.heatmaps is not None:
+            if self.heatmaps.ndim != 5:
+                raise ValueError("heatmaps must have shape NMKHW")
+            if self.heatmaps.shape[:3] != self.prediction.shape[:3]:
+                raise ValueError(
+                    "heatmap and keypoint batch/member/keypoint axes differ"
+                )
+        return self
+
+
+class HeatmapRegressionEnsemble(KeypointsEnsemble):
+    predict_full_model = HeatmapRegressionPredictFull
+    autocast_inference = True
+
     def forward(self, img):
         """Returns output tensor with shape MNCHW where M=nfolds, the number of models"""
         tta = self.config["inference"].get("tta", False)
@@ -52,21 +83,22 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
 
         return pred  # NMCHW
 
-    def _predict_batch(self, batch: dict) -> list[dict]:
-        """Run heatmap regression inference for a batch and decollate outputs."""
-        with torch.autocast(device_type=self.get_device().type):
-            heatmap = self.forward(batch["image"].to(self.get_device()))
-        keypoints = extract_keypoints_from_heatmaps(heatmap)
-        keypoints = torch.mean(keypoints, dim=1)  # average over models
-        items = {
-            "id": batch["id"],
-            "keypoints": keypoints,
+    def _predict_member_tensors(self, batch):
+        heatmaps = self.forward(batch["image"])
+        return extract_keypoints_from_heatmaps(heatmaps)
+
+    def _predict_step_tensors(self, batch):
+        heatmaps = self.forward(batch["image"])
+        prediction = extract_keypoints_from_heatmaps(heatmaps)
+        return {
+            "prediction": prediction,
+            "aggregate": self._aggregate_tensors(prediction),
+            "heatmaps": heatmaps,
         }
-        if "bounds" in batch:
-            items["bounds"] = batch["bounds"]
-        if "metadata" in batch:
-            items["metadata"] = batch["metadata"]
-        return decollate_batch(items)
+
+    def _prediction_size(self, batch, output):
+        heatmaps = output["heatmaps"]
+        return int(heatmaps.shape[-2]), int(heatmaps.shape[-1])
 
     def _predict_dataloader(self, dataloader, dest_path=None):
         with torch.no_grad():
@@ -76,12 +108,15 @@ class HeatmapRegressionEnsemble(FundusEnsemble):
                 if len(batch) == 0:
                     continue
 
-                items = self._predict_batch(batch)
-
-                items = [dataloader.dataset.transform.undo_item(item) for item in items]
+                items = [
+                    self.postprocess_item(item)
+                    for item in decollate_predict_full(self.predict_step_full(batch))
+                ]
                 all_ids += [item["id"] for item in items]
                 all_kps += [item["keypoints"] for item in items]
 
+            if not all_kps:
+                return pd.DataFrame(index=all_ids)
             columns = [(f"x{i}", f"y{i}") for i in range(len(all_kps[0]))]
             columns = [item for sublist in columns for item in sublist]
             all_kps = [kp.flatten() for kp in all_kps]

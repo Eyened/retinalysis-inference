@@ -10,6 +10,7 @@ from rtnls_inference.ensembles.ensemble_artery_vein import (
 from rtnls_inference.ensembles.ensemble_segmentation_overlaps import (
     SegmentationEnsembleOverlaps,
 )
+from rtnls_inference.ensembles.predict_output import restore_array_to_preprocessed
 
 
 class LUNetArteryVeinEnsemble(SegmentationEnsembleOverlaps):
@@ -40,14 +41,24 @@ class LUNetArteryVeinEnsemble(SegmentationEnsembleOverlaps):
             logits += torch.flip(flipped, dims=[axis + 1 for axis in axes])
         return logits / (len(flip_axes) + 1)
 
-    def predict_step(self, batch, batch_idx=None):
-        logits = self.forward(batch["image"]).mean(dim=1)
-        return torch.sigmoid(logits).permute(0, 2, 3, 1)
-
-    def _save_item(self, item: dict, dest_path: str | Path):
-        probabilities = np.asarray(item["image"])
+    def postprocess_item(self, item):
+        probabilities = restore_array_to_preprocessed(
+            item["aggregate"], item["geometry"], "bilinear"
+        )
         artery = probabilities[..., 0] > 0.5
         vein = probabilities[..., 1] > 0.5
-        # 0=background, 1=artery, 2=vein, 3=A/V overlap or crossing.
         mask = artery.astype(np.uint8) + 2 * vein.astype(np.uint8)
-        Image.fromarray(mask).save(dest_path)
+        result = {
+            "id": item.get("id"),
+            "output": mask,
+            "probabilities": probabilities,
+            "output_kind": "artery_vein_mask",
+            "output_space": "preprocessed",
+            "geometry": item["geometry"],
+        }
+        if "preprocessed_image" in item:
+            result["preprocessed_image"] = item["preprocessed_image"]
+        return result
+
+    def _save_item(self, item: dict, dest_path: str | Path):
+        Image.fromarray(np.asarray(item["output"], dtype=np.uint8)).save(dest_path)

@@ -2,15 +2,22 @@ import os
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from monai.inferers import sliding_window_inference
 from PIL import Image
-from pytorch_lightning.utilities import move_data_to_device
+from pydantic import Field, model_validator
 from tqdm import tqdm
 
+from rtnls_inference.ensembles.predict_output import (
+    PredictFullOutput,
+    decollate_predict_full,
+    output_manifest_row,
+    require_rank,
+    restore_array_to_preprocessed,
+)
 from rtnls_inference.ensembles.utils import EnsembleSplitter
 from rtnls_inference.metrics import Dice
-from rtnls_inference.utils import decollate_batch
 
 from .base import FundusEnsemble
 
@@ -24,7 +31,34 @@ def flip(data, axis):
     return torch.flip(data, dims=axis)
 
 
+class SegmentationPredictFull(PredictFullOutput):
+    logits: np.ndarray = Field(
+        description="Ensemble-averaged pre-softmax logits as NHWC."
+    )
+
+    @model_validator(mode="after")
+    def validate_segmentation(self):
+        require_rank(self.prediction, 5, "prediction")
+        require_rank(self.aggregate, 4, "aggregate")
+        require_rank(self.logits, 4, "logits")
+        if self.prediction.shape[2:] != self.logits.shape[1:]:
+            raise ValueError("member logits and averaged logits shapes differ")
+        if self.aggregate.shape != self.logits.shape:
+            raise ValueError("aggregate probabilities and logits shapes differ")
+        if not all(
+            np.issubdtype(value.dtype, np.floating)
+            for value in (self.prediction, self.aggregate, self.logits)
+        ):
+            raise ValueError(
+                "segmentation predictions and logits must be floating point"
+            )
+        return self
+
+
 class SegmentationEnsemble(FundusEnsemble):
+    predict_full_model = SegmentationPredictFull
+    autocast_inference = True
+
     def __init__(self, *args, postprocess_fn=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.postprocess_fn = postprocess_fn
@@ -37,21 +71,27 @@ class SegmentationEnsemble(FundusEnsemble):
         else:
             return self.sliding_window_inference(img)
 
-    def predict_step(self, batch, batch_idx=None):
-        """Returns the output averaged over models, shape NHWC"""
-        logits = self.predict_logits_step(batch)
-        return torch.nn.functional.softmax(logits, dim=-1)
+    def _predict_member_tensors(self, batch):
+        return self.forward(batch["image"]).permute(0, 1, 3, 4, 2)
 
-    def predict_logits_step(self, batch, batch_idx=None):
-        """Returns ensemble-averaged pre-softmax logits, shape NHWC."""
-        return self._predict_logits_tensor(batch)
+    def _aggregate_tensors(self, member_output):
+        return torch.softmax(member_output.mean(dim=1), dim=-1)
 
-    def _predict_logits_tensor(self, batch):
-        """Return ensemble-averaged pre-softmax logits as an NHWC tensor."""
-        logits = self.forward(batch["image"])
-        logits = torch.mean(logits, dim=1)  # average over models
-        logits = torch.permute(logits, (0, 2, 3, 1))  # NCHW -> NHWC
-        return logits
+    def _predict_step_tensors(self, batch):
+        prediction = self._predict_member_tensors(batch)
+        expected_channels = self.config.get("lightningmodule", {}).get("n_class")
+        if expected_channels is not None and prediction.shape[-1] != expected_channels:
+            raise ValueError(
+                f"Expected {expected_channels} segmentation channels, "
+                f"got {prediction.shape[-1]}"
+            )
+        logits = prediction.mean(dim=1)
+        aggregate = self._aggregate_tensors(prediction)
+        return {"prediction": prediction, "logits": logits, "aggregate": aggregate}
+
+    def _prediction_size(self, batch, output):
+        aggregate = output["aggregate"]
+        return int(aggregate.shape[1]), int(aggregate.shape[2])
 
     def tta_inference(self, img):
         tta_flips = self.config["inference"].get("tta_flips", [[2], [3], [2, 3]])
@@ -84,133 +124,65 @@ class SegmentationEnsemble(FundusEnsemble):
 
         return pred  # NMCHW
 
-    def _save_item(self, item: dict, dest_path: str | Path):
-        mask = np.argmax(item["image"], -1)
-        mask = mask.squeeze().astype(np.uint8)
+    def postprocess_item(self, item):
+        probabilities = restore_array_to_preprocessed(
+            item["aggregate"], item["geometry"], "bilinear"
+        )
+        mask = np.argmax(probabilities, axis=-1).astype(np.uint8)
         if self.postprocess_fn is not None:
             mask = self.postprocess_fn(mask)
-
-        Image.fromarray(mask).save(dest_path)
-
-    def _save_logits_item(
-        self,
-        item: dict,
-        dest_path: str | Path,
-        dtype: np.dtype | type = np.float16,
-    ):
-        logits = np.asarray(item["image"], dtype=dtype)
-        np.save(dest_path, logits)
-
-    def _predict_batch(self, batch: dict) -> list[dict]:
-        """Run segmentation inference for a batch and return decollated outputs."""
-        return self._predict_output_batch(batch, output="proba")
-
-    def _predict_logits_batch(self, batch: dict) -> list[dict]:
-        """Run segmentation inference for a batch and return raw logit maps."""
-        return self._predict_output_batch(batch, output="logits")
-
-    def _predict_output_batch(self, batch: dict, output: str = "proba") -> list[dict]:
-        """Run segmentation inference for a batch and return decollated outputs."""
-        with torch.autocast(device_type=self.get_device().type):
-            batch_on_device = move_data_to_device(batch, self.get_device())
-            if output == "proba":
-                image = self.predict_step(batch_on_device)
-            elif output == "logits":
-                image = self.predict_logits_step(batch_on_device)
-            else:
-                raise ValueError(f"Invalid segmentation output: {output}")
-
-        items = {
-            "id": batch["id"],
-            "image": image,
+        result = {
+            "id": item.get("id"),
+            "output": mask,
+            "probabilities": probabilities,
+            "output_kind": "mask",
+            "output_space": "preprocessed",
+            "geometry": item["geometry"],
         }
-        if "bounds" in batch:
-            items["bounds"] = batch["bounds"]
-        if "metadata" in batch:
-            items["metadata"] = batch["metadata"]
-        return decollate_batch(items)
+        if "preprocessed_image" in item:
+            result["preprocessed_image"] = item["preprocessed_image"]
+        return result
+
+    @staticmethod
+    def _save_item(item: dict, dest_path: str | Path):
+        Image.fromarray(np.asarray(item["output"], dtype=np.uint8)).save(dest_path)
+
+    def _compatibility_items(self, full_output):
+        return [
+            {"id": item.get("id"), "image": item["aggregate"]}
+            for item in decollate_predict_full(full_output)
+        ]
+
+    def _predict_output_batch(self, batch: dict) -> list[dict]:
+        return [
+            self.postprocess_item(item)
+            for item in decollate_predict_full(self.predict_step_full(batch))
+        ]
 
     def _predict_dataloader(
         self,
         dataloader,
         dest_path,
-        output: str = "proba",
-        suffix: str = ".png",
-        dtype: np.dtype | type = np.float16,
     ):
-        if not os.path.exists(dest_path):
-            os.makedirs(dest_path)
-        with torch.no_grad():
-            for batch in tqdm(dataloader):
-                if len(batch) == 0:
-                    continue
-
-                items = self._predict_output_batch(batch, output=output)
-                items = [dataloader.dataset.transform.undo_item(item) for item in items]
-
-                for item in items:
-                    fpath = os.path.join(dest_path, f"{item['id']}{suffix}")
-                    if output == "logits":
-                        self._save_logits_item(item, fpath, dtype=dtype)
-                    else:
-                        self._save_item(item, fpath)
-
-    def _predict_logits_dataloader(
-        self,
-        dataloader,
-        dest_path,
-        dtype: np.dtype | type = np.float16,
-    ):
-        return self._predict_dataloader(
-            dataloader,
-            dest_path,
-            output="logits",
-            suffix=".npy",
-            dtype=dtype,
-        )
-
-    def predict_logits_dataset(
-        self,
-        data,
-        dest_path,
-        num_workers=0,
-        batch_size=None,
-        dtype: np.dtype | type = np.float16,
-    ):
-        """Run inference on a dataset and save pre-softmax logits as .npy files."""
-        inputs = {"images": data}
-        dataloader = self._make_inference_dataloader(
-            inputs,
-            num_workers=num_workers,
-            preprocess=True,
-            batch_size=batch_size,
-        )
-        return self._predict_logits_dataloader(dataloader, dest_path, dtype=dtype)
-
-    def predict_logits_preprocessed(
-        self,
-        data,
-        dest_path,
-        num_workers=0,
-        batch_size=None,
-        dtype: np.dtype | type = np.float16,
-    ):
-        """Run inference on preprocessed images and save pre-softmax logits."""
-        inputs = {"images": data}
-        dataloader = self._make_inference_dataloader(
-            inputs,
-            num_workers=num_workers,
-            preprocess=False,
-            batch_size=batch_size,
-        )
-        return self._predict_logits_dataloader(dataloader, dest_path, dtype=dtype)
+        if dest_path is None:
+            raise ValueError("dest_path is required for spatial prediction output")
+        os.makedirs(dest_path, exist_ok=True)
+        manifest = []
+        for batch in tqdm(dataloader):
+            if len(batch) == 0:
+                continue
+            for item in self._predict_output_batch(batch):
+                fpath = Path(dest_path) / f"{item['id']}.png"
+                self._save_item(item, fpath)
+                manifest.append(output_manifest_row(item, str(fpath)))
+        return pd.DataFrame(manifest)
 
     def on_test_start(self):
         self.dice = Dice(self.config["lightningmodule"].get("n_class", 2))
 
     def test_step(self, batch, batch_idx):
         proba = self.forward(batch["image"])
-        proba = torch.mean(proba, dim=0)  # average over models, NCHW
+        proba = torch.mean(proba, dim=1)  # average over models, NCHW
 
         mask = batch["mask"][..., 1][:, None, :, :] == 0
         lbl = batch["mask"][..., 0][:, None, :, :]
