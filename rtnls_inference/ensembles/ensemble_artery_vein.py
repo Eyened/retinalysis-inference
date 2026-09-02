@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
@@ -27,7 +27,8 @@ from rtnls_inference.ensembles.predict_output import (
     restore_array_to_preprocessed,
 )
 
-from .base import FundusEnsemble
+from .av_inference import AVInferenceConfig, infer_artery_vein
+from .base import _UNSET, FundusEnsemble
 
 
 def _tile_positions(length: int, output_size: int, stride: int) -> list[int]:
@@ -191,17 +192,9 @@ def normalize_refinement_mode(mode: str) -> str:
 def resolve_artery_vein_refinement_config(
     inference_config: Mapping | None,
 ) -> tuple[str, dict[str, float | int]]:
-    """Return defaults while ignoring legacy embedded refinement configuration."""
+    """Return structured AV inference defaults."""
     del inference_config
-    kwargs = {
-        "vessel_threshold": 0.5,
-        "crossing_threshold": 0.5,
-        "crossing_radius": 3,
-        "node_radius": 1,
-        "min_component_size": 10,
-        "relabel_margin": 0.15,
-    }
-    return "basic", kwargs
+    return "basic", asdict(AVInferenceConfig())
 
 
 def _sigmoid(value: np.ndarray) -> np.ndarray:
@@ -232,23 +225,6 @@ def basic_artery_vein_mask(
     result[vessel] = np.where(logits[..., 1][vessel] >= logits[..., 2][vessel], 1, 2)
     result[crossing] = 3
     return result
-
-
-def _pixel_graph(skeleton: np.ndarray) -> nx.Graph:
-    graph = nx.Graph()
-    coordinates = np.argwhere(skeleton)
-    graph.add_nodes_from(map(tuple, coordinates))
-    for row, col in coordinates:
-        node = (int(row), int(col))
-        for drow, dcol in ((0, 1), (1, -1), (1, 0), (1, 1)):
-            neighbour = (node[0] + drow, node[1] + dcol)
-            if (
-                0 <= neighbour[0] < skeleton.shape[0]
-                and 0 <= neighbour[1] < skeleton.shape[1]
-                and skeleton[neighbour]
-            ):
-                graph.add_edge(node, neighbour)
-    return graph
 
 
 def _component_image(
@@ -377,108 +353,64 @@ def refine_artery_vein_segments(
 def refine_artery_vein_graph_full(
     logits: np.ndarray,
     *,
-    vessel_threshold: float = 0.5,
-    crossing_threshold: float = 0.5,
-    crossing_radius: int = 3,
-    min_component_size: int = 10,
-    relabel_margin: float = 0.15,
+    disc_mask: np.ndarray | None = None,
+    bounds_mask: np.ndarray | None = None,
+    **kwargs: float,
 ) -> np.ndarray:
-    """Directionally reconnect segments across crossings, then relabel trees."""
-    raw, vessel, crossing, skeleton, evidence_weight = _refinement_state(
-        logits,
-        vessel_threshold=vessel_threshold,
-        crossing_threshold=crossing_threshold,
+    """Infer anatomically rooted acyclic artery and vein forests."""
+    return infer_artery_vein(
+        logits, disc_mask=disc_mask, bounds_mask=bounds_mask, **kwargs
+    ).mask
+
+
+def refine_artery_vein_graph_full_with_flips(
+    logits: np.ndarray,
+    *,
+    disc_mask: np.ndarray | None = None,
+    bounds_mask: np.ndarray | None = None,
+    **kwargs: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return structured refinement and segments whose AV label changed."""
+    result = infer_artery_vein(
+        logits, disc_mask=disc_mask, bounds_mask=bounds_mask, **kwargs
     )
-    if int(vessel.sum()) < min_component_size:
-        return raw
-
-    try:
-        crossing_zone = binary_dilation(crossing, disk(crossing_radius))
-        component_image = _component_image(
-            skeleton & ~crossing_zone,
-            min_component_size=min_component_size,
-        )
-        if not np.any(component_image):
-            return raw
-
-        continuity = nx.Graph()
-        continuity.add_nodes_from(range(1, int(component_image.max()) + 1))
-        crossing_regions = connected_labels(crossing_zone, connectivity=2)
-        for region_id in range(1, int(crossing_regions.max()) + 1):
-            region = crossing_regions == region_id
-            contacts = component_image[binary_dilation(region, disk(1))]
-            contacts = [int(value) for value in np.unique(contacts) if value > 0]
-            if len(contacts) < 2:
-                continue
-            center = np.asarray(np.argwhere(region).mean(axis=0))
-            directions = {}
-            nearby = binary_dilation(region, disk(2))
-            for component_id in contacts:
-                points = np.argwhere((component_image == component_id) & nearby)
-                if len(points):
-                    vector = points.mean(axis=0) - center
-                    norm = np.linalg.norm(vector)
-                    if norm > 0:
-                        directions[component_id] = vector / norm
-            remaining = set(directions)
-            while len(remaining) >= 2:
-                best = min(
-                    (
-                        (float(np.dot(directions[a], directions[b])), a, b)
-                        for a in remaining
-                        for b in remaining
-                        if a < b
-                    ),
-                    default=None,
-                )
-                if best is None:
-                    break
-                _, first, second = best
-                continuity.add_edge(first, second)
-                remaining.remove(first)
-                remaining.remove(second)
-
-        group_image = np.zeros_like(component_image)
-        for group_id, component_ids in enumerate(
-            nx.connected_components(continuity), start=1
-        ):
-            for component_id in component_ids:
-                group_image[component_image == component_id] = group_id
-
-        return _relabel_groups(
-            logits,
-            raw,
-            vessel,
-            crossing,
-            group_image,
-            evidence_weight,
-            min_component_size=min_component_size,
-            relabel_margin=relabel_margin,
-        )
-    except Exception:  # noqa: BLE001 - inference must fall back to raw labels
-        return raw
+    return result.mask, result.changed_segment_mask
 
 
 def refine_artery_vein_graph(logits: np.ndarray, **kwargs) -> np.ndarray:
-    """Backward-compatible alias for full directional refinement."""
+    """Backward-compatible alias for structured AV forest inference."""
     return refine_artery_vein_graph_full(logits, **kwargs)
+
+
+def _simple_refinement_kwargs(kwargs: Mapping) -> dict[str, float | int]:
+    """Map structured settings onto the legacy simple-segment decoder."""
+    junction_radius = int(kwargs.get("junction_radius", 3))
+    return {
+        "vessel_threshold": float(kwargs.get("vessel_threshold", 0.5)),
+        "crossing_threshold": float(kwargs.get("crossing_threshold", 0.5)),
+        "crossing_radius": junction_radius,
+        "node_radius": junction_radius,
+        "min_component_size": int(kwargs.get("min_segment_size", 10)),
+        "relabel_margin": 0.15,
+    }
 
 
 def artery_vein_refinement_variants(
     logits: np.ndarray,
     **kwargs,
 ) -> dict[str, np.ndarray]:
-    """Compute the basic, simple-segment, and full-directional masks."""
+    """Compute basic, simple-segment, and structured-forest AV masks."""
     basic_kwargs = {
         key: kwargs[key]
         for key in ("vessel_threshold", "crossing_threshold")
         if key in kwargs
     }
-    full_kwargs = {key: value for key, value in kwargs.items() if key != "node_radius"}
     return {
         "basic": basic_artery_vein_mask(logits, **basic_kwargs),
-        "refinement_simple": refine_artery_vein_segments(logits, **kwargs),
-        "refinement_full": refine_artery_vein_graph_full(logits, **full_kwargs),
+        "refinement_simple": refine_artery_vein_segments(
+            logits, **_simple_refinement_kwargs(kwargs)
+        ),
+        "refinement_full": refine_artery_vein_graph_full(logits, **kwargs),
     }
 
 
@@ -497,9 +429,8 @@ def refine_artery_vein(
         }
         return basic_artery_vein_mask(logits, **basic_kwargs)
     if normalized == "refinement_simple":
-        return refine_artery_vein_segments(logits, **kwargs)
-    full_kwargs = {key: value for key, value in kwargs.items() if key != "node_radius"}
-    return refine_artery_vein_graph_full(logits, **full_kwargs)
+        return refine_artery_vein_segments(logits, **_simple_refinement_kwargs(kwargs))
+    return refine_artery_vein_graph_full(logits, **kwargs)
 
 
 class ArteryVeinPredictFull(PredictFullOutput):
@@ -552,47 +483,54 @@ class ArteryVeinSegmentationEnsemble(FundusEnsemble):
     def __init__(
         self,
         *args,
-        refinement_mode: str | None = None,
-        refinement_parameters: Mapping[str, float | int] | None = None,
+        refinement_mode: str | None = _UNSET,
+        refinement_parameters: Mapping[str, float | int] | None = _UNSET,
         **kwargs,
     ):
         """Create an AV ensemble with optional CPU graph refinement.
 
-        Refinement is a runtime concern and is deliberately not read from the
-        embedded model configuration. ``None`` selects basic per-pixel AV
-        decoding without graph refinement.
+        Embedded ``inference.graph_refinement`` is the default. Constructor
+        ``graph_refinement`` merges over it. ``refinement_mode`` and
+        ``refinement_parameters`` remain higher-precedence aliases; passing
+        ``refinement_mode=None`` still selects basic per-pixel decoding.
         """
         super().__init__(*args, **kwargs)
-        self.refinement_mode = normalize_refinement_mode(refinement_mode or "basic")
         _, defaults = resolve_artery_vein_refinement_config(None)
-        parameters = dict(refinement_parameters or {})
+        merged = self._inference_mapping("graph_refinement")
+        if refinement_mode is not _UNSET:
+            mode = refinement_mode
+        else:
+            mode = merged.get("mode")
+        self.refinement_mode = normalize_refinement_mode(mode or "basic")
+        parameters = {key: value for key, value in merged.items() if key != "mode"}
+        if refinement_parameters is not _UNSET and refinement_parameters is not None:
+            parameters.update(refinement_parameters)
         unknown = set(parameters) - set(defaults)
         if unknown:
             raise ValueError(f"Unknown AV refinement parameters: {sorted(unknown)}")
         self.refinement_parameters = {**defaults, **parameters}
 
     def _halo_logits(self, image: torch.Tensor) -> torch.Tensor:
-        inference = self.config.get("inference", {})
         model_config = self.config.get("lightningmodule", {})
         return halo_sliding_window_inference(
             image,
             self.ensemble,
             context_size=int(model_config.get("context_size", 1024)),
             output_size=int(model_config.get("output_size", 512)),
-            overlap=float(inference.get("overlap", 0.5)),
-            sw_batch_size=int(inference.get("batch_size", 1)),
-            sigma_scale=float(inference.get("gaussian_sigma_scale", 0.125)),
+            overlap=float(self._inference_setting("overlap", 0.5)),
+            sw_batch_size=self._tile_batch_size(1, legacy_batch_size=True),
+            sigma_scale=float(self._inference_setting("gaussian_sigma_scale", 0.125)),
         )
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         logits = self._halo_logits(image)
-        inference = self.config.get("inference", {})
-        if not inference.get("tta", False):
+        if not self._inference_setting("tta", False):
             return logits
-        for axes in inference.get("tta_flips", [[2], [3], [2, 3]]):
+        flip_axes = self._inference_setting("tta_flips", [[2], [3], [2, 3]])
+        for axes in flip_axes:
             flipped = self._halo_logits(torch.flip(image, dims=axes))
             logits += torch.flip(flipped, dims=[axis + 1 for axis in axes])
-        return logits / (len(inference.get("tta_flips", [[2], [3], [2, 3]])) + 1)
+        return logits / (len(flip_axes) + 1)
 
     def _refinement_config(self) -> tuple[str, dict]:
         return self.refinement_mode, dict(self.refinement_parameters)
@@ -657,9 +595,7 @@ class ArteryVeinSegmentationEnsemble(FundusEnsemble):
         }
         if "preprocessed_image" in item:
             result["preprocessed_image"] = item["preprocessed_image"]
-        if self.config.get("inference", {}).get(
-            "return_postprocess_intermediates", False
-        ):
+        if self._inference_setting("return_postprocess_intermediates", False):
             result["probabilities"] = restore_array_to_preprocessed(
                 item["aggregate"], item["geometry"], "bilinear"
             )
