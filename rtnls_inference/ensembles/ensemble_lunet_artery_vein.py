@@ -17,24 +17,22 @@ class LUNetArteryVeinEnsemble(SegmentationEnsembleOverlaps):
     """Halo-tile inference for LUNet's artery, vein, and vessel logits."""
 
     def _halo_logits(self, image: torch.Tensor) -> torch.Tensor:
-        inference = self.config.get("inference", {})
         model_config = self.config.get("lightningmodule", {})
         return halo_sliding_window_inference(
             image,
             self.ensemble,
             context_size=int(model_config.get("context_size", 1024)),
             output_size=int(model_config.get("output_size", 512)),
-            overlap=float(inference.get("overlap", 0.5)),
-            sw_batch_size=int(inference.get("batch_size", 1)),
-            sigma_scale=float(inference.get("gaussian_sigma_scale", 0.125)),
+            overlap=float(self._inference_setting("overlap", 0.5)),
+            sw_batch_size=self._tile_batch_size(1, legacy_batch_size=True),
+            sigma_scale=float(self._inference_setting("gaussian_sigma_scale", 0.125)),
         )
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """Return N,M,C,H,W logits, preserving the ensemble-model axis."""
         logits = self._halo_logits(image)
-        inference = self.config.get("inference", {})
-        flip_axes = inference.get("tta_flips", [[2], [3], [2, 3]])
-        if not inference.get("tta", False):
+        flip_axes = self._inference_setting("tta_flips", [[2], [3], [2, 3]])
+        if not self._inference_setting("tta", False):
             return logits
         for axes in flip_axes:
             flipped = self._halo_logits(torch.flip(image, dims=axes))

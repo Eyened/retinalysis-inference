@@ -319,9 +319,9 @@ def test_overlap_families_restore_probabilities_before_thresholding(ensemble, ex
 def test_halo_av_refines_before_nearest_restoration(monkeypatch):
     ensemble = _DirectAV(
         _UnusedBackend(),
-        _config(graph_refinement={"mode": "full", "relabel_margin": 999.0}),
+        _config(graph_refinement={"mode": "full", "direction_cost_weight": 999.0}),
         refinement_mode="simple",
-        refinement_parameters={"relabel_margin": 0.25},
+        refinement_parameters={"direction_cost_weight": 0.25},
     )
     full_item = decollate_predict_full(ensemble.predict_step_full(_batch()))[0]
     observed = []
@@ -334,20 +334,20 @@ def test_halo_av_refines_before_nearest_restoration(monkeypatch):
     processed = ensemble.postprocess_item(full_item)
     assert observed[0][0] == (H, W, 4)
     assert observed[0][1] == "refinement_simple"
-    assert observed[0][2]["relabel_margin"] == 0.25
+    assert observed[0][2]["direction_cost_weight"] == 0.25
     assert processed["output"].shape == (H * 2, W * 2)
     assert processed["output"].dtype == np.uint8
     assert processed["output_space"] == "preprocessed"
 
 
-def test_halo_av_ignores_embedded_refinement_and_defaults_to_basic():
+def test_halo_av_uses_embedded_refinement_as_default():
     ensemble = _DirectAV(
         _UnusedBackend(),
-        _config(graph_refinement={"mode": "full", "relabel_margin": 999.0}),
+        _config(graph_refinement={"mode": "full", "direction_cost_weight": 999.0}),
     )
     full = ensemble.predict_step_full(_batch())
-    assert full["refinement_mode"] == "basic"
-    assert full["refinement_parameters"]["relabel_margin"] == 0.15
+    assert full["refinement_mode"] == "refinement_full"
+    assert full["refinement_parameters"]["direction_cost_weight"] == 999.0
 
 
 def test_halo_av_rejects_unknown_constructor_refinement_parameters():

@@ -34,20 +34,27 @@ High-level spatial outputs always end in canonical preprocessed geometry, normal
 | Heatmap | `NMK2` | `NK2` | optional `heatmaps: NMKHW` |
 | Halo artery/vein | `NMHW4` member logits | `NHW4` probabilities | averaged `logits: NHW4`, exact four names and runtime refinement configuration |
 
-Halo artery/vein graph refinement is disabled by default and is configured when
-the ensemble is constructed, never through embedded release configuration:
+### Configuring inference
+
+Runtime settings from `config.inference` can be overridden when constructing an ensemble. Constructor values win over the release defaults. Nested mappings such as `graph_refinement` are merged field by field.
 
 ```python
-ensemble = make_ensemble(release_path)  # basic per-pixel AV decoding
 ensemble = make_ensemble(
     release_path,
-    refinement_mode="full",
-    refinement_parameters={"relabel_margin": 0.25},
+    tta=False,
+    overlap=0.25,
+    tile_batch_size=8,
+    graph_refinement={"mode": "full", "direction_cost_weight": 0.0},
 )
 ```
 
-`refinement_mode=None`, `"none"`, and `"basic"` all disable graph refinement.
-Legacy `inference.graph_refinement` values embedded in model releases are ignored.
+- `batch_size` is the image/dataloader batch size.
+- `tile_batch_size` is the sliding-window tile micro-batch. Halo models still fall back to embedded `inference.batch_size` when `tile_batch_size` is omitted.
+- New ensembles must read these settings through `_inference_setting`, `_inference_mapping`, and `_tile_batch_size`, not from `self.config["inference"]` directly.
+
+For artery/vein models, embedded `inference.graph_refinement` is the default. `refinement_mode` and `refinement_parameters` remain supported aliases and take precedence over `graph_refinement`. Passing `refinement_mode=None` still selects basic per-pixel decoding.
+
+In `full` mode, configurable-radius junction regions expose segment ports. The optimizer scores continuation, bifurcation, overlap, and cut configurations from spline direction, thickness, vessel/crossing logits, and A/V compatibility. A mixed-integer program jointly assigns segment classes and configurations while forcing the artery and vein graphs to be acyclic rooted forests. When `disc_mask` and `bounds_mask` are supplied to `infer_artery_vein`, disc pixels are removed and roots are prioritized as disc contact, fundus-boundary fallback, then internal fallback. The inward fundus boundary width is configurable with `bounds_boundary_width`. Short components below `min_segment_size` are retained as microsegments when they connect at least two junction boundaries. Microsegments use their endpoint chord instead of a spline, cannot become roots, and must connect at every port when active. Individual evidence costs and the disc, bounds, internal, distance, and thickness root costs can be ablated independently by setting their corresponding weights or penalties to zero.
 
 Do not add logit-specific step or bulk aliases. Read logits from `predict_step_full(batch)["logits"]`; a bulk export is a short dataloader loop that restores each array to canonical geometry before writing it.
 

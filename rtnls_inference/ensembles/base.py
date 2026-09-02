@@ -1,10 +1,10 @@
 import json
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import lightning as L
 import numpy as np
@@ -29,18 +29,107 @@ from rtnls_inference.release_config import update_stored_config
 from rtnls_inference.transforms import make_test_transform
 from rtnls_inference.utils import collate_except_metadata
 
+T = TypeVar("T")
+_UNSET: Any = object()
+
+_INFERENCE_OVERRIDE_NAMES = (
+    "batch_size",
+    "tile_batch_size",
+    "tta",
+    "tta_flips",
+    "tracing_input_size",
+    "overlap",
+    "blend",
+    "gaussian_sigma_scale",
+    "return_postprocess_intermediates",
+    "graph_refinement",
+)
+
 
 class Ensemble(L.LightningModule):
     predict_full_model = PredictFullOutput
     autocast_inference = False
 
     def __init__(
-        self, ensemble: L.LightningModule, config: dict, fpath: Path | str = None
+        self,
+        ensemble: L.LightningModule,
+        config: dict,
+        fpath: Path | str | None = None,
+        *,
+        batch_size: int | None = _UNSET,
+        tile_batch_size: int | None = _UNSET,
+        tta: bool | None = _UNSET,
+        tta_flips: Sequence[Sequence[int]] | None = _UNSET,
+        tracing_input_size: Sequence[int] | None = _UNSET,
+        overlap: float | None = _UNSET,
+        blend: str | None = _UNSET,
+        gaussian_sigma_scale: float | None = _UNSET,
+        return_postprocess_intermediates: bool | None = _UNSET,
+        graph_refinement: Mapping[str, Any] | None = _UNSET,
     ):
         super().__init__()
         self.ensemble = ensemble
         self.config = config
         self.fpath = fpath
+        supplied = {
+            "batch_size": batch_size,
+            "tile_batch_size": tile_batch_size,
+            "tta": tta,
+            "tta_flips": tta_flips,
+            "tracing_input_size": tracing_input_size,
+            "overlap": overlap,
+            "blend": blend,
+            "gaussian_sigma_scale": gaussian_sigma_scale,
+            "return_postprocess_intermediates": return_postprocess_intermediates,
+            "graph_refinement": graph_refinement,
+        }
+        self._inference_overrides = {
+            name: value for name, value in supplied.items() if value is not _UNSET
+        }
+
+    def _inference_config(self) -> dict[str, Any]:
+        inference = self.config.get("inference")
+        return inference if isinstance(inference, Mapping) else {}
+
+    def _inference_setting(self, name: str, default: T) -> T:
+        """Resolve a runtime inference setting: constructor, then config, then default."""
+        if name not in _INFERENCE_OVERRIDE_NAMES:
+            raise KeyError(f"Unknown inference setting {name!r}")
+        if name in self._inference_overrides:
+            return self._inference_overrides[name]
+        inference = self._inference_config()
+        if name in inference:
+            return inference[name]
+        return default
+
+    def _inference_mapping(
+        self, name: str, default: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Merge a nested inference mapping: default, then config, then constructor."""
+        if name not in _INFERENCE_OVERRIDE_NAMES:
+            raise KeyError(f"Unknown inference setting {name!r}")
+        merged: dict[str, Any] = dict(default or {})
+        embedded = self._inference_config().get(name)
+        if isinstance(embedded, Mapping):
+            merged.update(embedded)
+        override = self._inference_overrides.get(name, _UNSET)
+        if override is not _UNSET and override is not None:
+            if not isinstance(override, Mapping):
+                raise TypeError(f"{name} must be a mapping, got {type(override)!r}")
+            merged.update(override)
+        return merged
+
+    def _tile_batch_size(self, default: int, *, legacy_batch_size: bool = False) -> int:
+        """Resolve sliding-window tile batch size without using constructor batch_size."""
+        override = self._inference_overrides.get("tile_batch_size", _UNSET)
+        if override is not _UNSET:
+            return int(override)
+        inference = self._inference_config()
+        if "tile_batch_size" in inference:
+            return int(inference["tile_batch_size"])
+        if legacy_batch_size and "batch_size" in inference:
+            return int(inference["batch_size"])
+        return int(default)
 
     @classmethod
     def from_torchscript(
@@ -293,23 +382,23 @@ class FundusEnsemble(Ensemble):
             input_mask_reader=input_mask_reader,
         )
 
-        batch_size = (
-            batch_size
-            if batch_size is not None
-            else self.config["inference"].get("batch_size", 8)
-        )
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            pin_memory=False,
-            shuffle=False,
-            collate_fn=(
+        if batch_size is None:
+            batch_size = self._inference_setting("batch_size", 8)
+        pin_memory = self.get_device().type == "cuda"
+        loader_kwargs: dict[str, Any] = {
+            "batch_size": batch_size,
+            "pin_memory": pin_memory,
+            "shuffle": False,
+            "collate_fn": (
                 collate_except_metadata
                 if ignore_exceptions
                 else torch.utils.data.dataloader.default_collate
             ),
-            num_workers=num_workers,
-        )
+            "num_workers": num_workers,
+        }
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(dataset, **loader_kwargs)
 
     def predict_dataset(
         self,
