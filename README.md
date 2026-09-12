@@ -70,7 +70,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvi
 
 Pytorch installation instructions are [here](https://pytorch.org/get-started/locally/).
 
-We did not include torch as a dependency of rtnls-inference. These must be installed manually beforehand. 
+`retinalysis-inference` declares `torch>=2.4.1,<3` and `torchvision>=0.19,<1`. Install the CUDA build that matches your machine first so pip reuses it; a bare install still pulls a default PyTorch from PyPI. 
 
 2. Install rtnls_fundusprep and rtnls-inference:
 
