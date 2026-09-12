@@ -33,8 +33,6 @@ class FundusTestTransform(TestTransform):
             [A.Resize(resize, resize)],
             additional_targets={
                 "ce": "image",
-                "logits": "image",
-                "head_logits": "image",
                 "input_mask": "mask",
                 "loss_mask": "mask",
                 "masks_multilabel": "mask",
@@ -103,6 +101,7 @@ class FundusTestTransform(TestTransform):
         # if "bounds" in item:
         #     item["metadata"]["bounds"] = item["bounds"].to_dict()
 
+        item.setdefault("keypoints", [])
         item = self.transform(**item)
         return item
 

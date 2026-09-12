@@ -36,6 +36,7 @@ class BasicTestTransform(TestTransform):
 
     def _transform(self, preprocess=None, **item):
         preprocessed_image = np.asarray(item["image"], dtype=np.uint8).copy()
+        item.setdefault("keypoints", [])
         item = self.transform(**item)
         item["preprocessed_image"] = preprocessed_image
         return item

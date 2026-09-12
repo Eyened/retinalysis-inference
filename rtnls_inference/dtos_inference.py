@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numbers
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -99,15 +99,15 @@ class ModelInputDTO(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
-class InferenceDatasetDTO(BaseModel):
-    """Container for datasets passed into inference."""
+InputT = TypeVar("InputT", bound=ModelInputDTO)
+
+
+class InferenceDatasetDTO(BaseModel, Generic[InputT]):
+    """Validated container for strict model inference inputs."""
 
     model_config = ConfigDict(extra="forbid")
 
-    images: List[ModelInputDTO] = Field(
-        ..., description="Validated list of inference inputs."
-    )
+    images: List[InputT] = Field(..., description="Validated inference inputs.")
 
     def to_serialized_images(self) -> List[Dict[str, Any]]:
-        """Serialize all images to the list-of-dicts format."""
         return [image.to_serialized_dict() for image in self.images]

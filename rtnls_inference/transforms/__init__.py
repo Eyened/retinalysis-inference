@@ -1,9 +1,21 @@
-from rtnls_inference.utils import get_all_subclasses_dict
+from rtnls_inference.components import (
+    build_subclass_registry,
+    import_project_components,
+)
 
 from .base import TestTransform
+from .basic import BasicTestTransform  # noqa: F401
 from .fundus import FundusTestTransform
 
-test_transforms = get_all_subclasses_dict(TestTransform)
+_test_transforms: dict[str, type[TestTransform]] | None = None
+
+
+def get_test_transform_registry() -> dict[str, type[TestTransform]]:
+    global _test_transforms
+    import_project_components()
+    if _test_transforms is None:
+        _test_transforms = build_subclass_registry(TestTransform)
+    return _test_transforms
 
 
 def make_test_transform(transform_cfg, **kwargs):
@@ -11,7 +23,7 @@ def make_test_transform(transform_cfg, **kwargs):
     if class_name is None:
         return FundusTestTransform(**transform_cfg, **kwargs)
     
-    test_transform_class = test_transforms.get(
+    test_transform_class = get_test_transform_registry().get(
         class_name, None
     )
 

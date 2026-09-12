@@ -6,9 +6,6 @@ from pathlib import Path
 import torch
 
 from rtnls_inference.ensembles.base import Ensemble
-from rtnls_inference.ensembles.ensemble_artery_vein import (  # noqa: F401
-    ArteryVeinSegmentationEnsemble,
-)
 from rtnls_inference.ensembles.ensemble_classification import (  # noqa: F401
     ClassificationEnsemble,
 )
@@ -20,9 +17,6 @@ from rtnls_inference.ensembles.ensemble_halo_segmentation import (  # noqa: F401
     HaloSegmentationEnsemble,
 )
 from rtnls_inference.ensembles.ensemble_keypoints import KeypointsEnsemble  # noqa: F401
-from rtnls_inference.ensembles.ensemble_lunet_artery_vein import (  # noqa: F401
-    LUNetArteryVeinEnsemble,
-)
 from rtnls_inference.ensembles.ensemble_regression import (
     RegressionEnsemble,  # noqa: F401
 )
@@ -44,15 +38,29 @@ from rtnls_inference.ensembles.predict_output import (  # noqa: F401
     restore_points_to_preprocessed,
 )
 from rtnls_inference.release_config import load_stored_config, update_stored_config
-from rtnls_inference.utils import find_release_file, get_all_subclasses_dict
+from rtnls_inference.components import (
+    build_subclass_registry,
+    import_project_components,
+)
+from rtnls_inference.utils import find_release_file
 
-name_to_ensemble = get_all_subclasses_dict(Ensemble)
+_name_to_ensemble: dict[str, type[Ensemble]] | None = None
+
+
+def get_ensemble_registry() -> dict[str, type[Ensemble]]:
+    """Return the ensemble registry after importing CWD project components."""
+    global _name_to_ensemble
+    import_project_components()
+    if _name_to_ensemble is None:
+        _name_to_ensemble = build_subclass_registry(Ensemble)
+    return _name_to_ensemble
 
 
 def get_ensemble_class(config) -> type[Ensemble]:
     """Resolve the inference wrapper class from embedded release config."""
     ensemble_name = config.get("inference", {}).get("ensemble_class")
     if ensemble_name:
+        name_to_ensemble = get_ensemble_registry()
         try:
             return name_to_ensemble[ensemble_name]
         except KeyError as exc:

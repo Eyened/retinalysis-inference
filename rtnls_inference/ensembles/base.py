@@ -13,9 +13,7 @@ import torch
 from huggingface_hub import HfApi, hf_hub_download
 from torch.utils.data import DataLoader
 
-from rtnls_inference.datasets.fundus import (
-    FundusTestDataset,
-)
+from rtnls_inference.datasets.fundus import FundusInferenceDataset
 from rtnls_inference.ensembles.onnx_backend import OnnxEnsembleBackend
 from rtnls_inference.ensembles.predict_output import (
     PredictFullOutput,
@@ -346,6 +344,8 @@ class Ensemble(L.LightningModule):
 
 
 class FundusEnsemble(Ensemble):
+    inference_dataset_cls = FundusInferenceDataset
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -359,26 +359,19 @@ class FundusEnsemble(Ensemble):
     ):
         datamodule_config = self.config.get("datamodule", {})
 
-        mask_reader = None
-        if "mask_reader" in datamodule_config and isinstance(
-            datamodule_config["mask_reader"], dict
-        ):
-            mask_reader = make_mask_reader(datamodule_config["mask_reader"])
-
         input_mask_reader = None
         if "input_mask_reader" in datamodule_config and isinstance(
             datamodule_config["input_mask_reader"], dict
         ):
             input_mask_reader = make_mask_reader(datamodule_config["input_mask_reader"])
 
-        dataset = FundusTestDataset(
+        dataset = self.inference_dataset_cls(
             data=inputs,
             transform=make_test_transform(
                 self.config["datamodule"].get("test_transform", {}),
                 preprocess=preprocess,
             ),
             ignore_exceptions=ignore_exceptions,
-            mask_reader=mask_reader,
             input_mask_reader=input_mask_reader,
         )
 
@@ -457,7 +450,6 @@ class FundusEnsemble(Ensemble):
         df: pd.DataFrame,
         dest_path=None,
         image_path_column="image",
-        mask_path_column="mask",
         id_column="id",
         preprocess=True,
         **kwargs,
@@ -468,7 +460,6 @@ class FundusEnsemble(Ensemble):
             df: DataFrame with image paths
             dest_path: Directory to save predictions
             image_path_column: Column name for image paths
-            mask_path_column: Column name for mask paths (optional)
             id_column: Column name for IDs (optional, will use index if not present)
             preprocess: Whether to preprocess images
             **kwargs: Additional arguments passed to predict methods
@@ -481,8 +472,6 @@ class FundusEnsemble(Ensemble):
                 else str(idx),
                 "image": str(row[image_path_column]),
             }
-            if mask_path_column in df.columns:
-                entry["mask"] = str(row[mask_path_column])
             data.append(entry)
 
         if preprocess:

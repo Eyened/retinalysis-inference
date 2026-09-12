@@ -2,23 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import rtnls_inference.ensembles.ensemble_artery_vein as av_module
 import torch
 from pydantic import ValidationError
-from rtnls_inference.artery_vein import AV_HEAD_NAMES
-from rtnls_inference.ensembles.ensemble_artery_vein import (
-    ArteryVeinPredictFull,
-    ArteryVeinSegmentationEnsemble,
-)
 from rtnls_inference.ensembles.ensemble_classification import ClassificationEnsemble
 from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble
 from rtnls_inference.ensembles.ensemble_heatmap_regression import (
     HeatmapRegressionEnsemble,
 )
 from rtnls_inference.ensembles.ensemble_keypoints import KeypointsEnsemble
-from rtnls_inference.ensembles.ensemble_lunet_artery_vein import (
-    LUNetArteryVeinEnsemble,
-)
 from rtnls_inference.ensembles.ensemble_regression import RegressionEnsemble
 from rtnls_inference.ensembles.ensemble_segmentation import (
     SegmentationEnsemble,
@@ -61,14 +52,6 @@ class _DirectOverlaps(SegmentationEnsembleOverlaps):
         return values.reshape(N, M, 2, H, W) / 100.0 - 1.0
 
 
-class _DirectLUNet(LUNetArteryVeinEnsemble):
-    def forward(self, image):
-        values = torch.arange(
-            N * M * 3 * H * W, device=image.device, dtype=torch.float32
-        )
-        return values.reshape(N, M, 3, H, W) / 100.0 - 1.0
-
-
 class _MemberFirstBackend(torch.nn.Module):
     def __init__(self, features: int):
         super().__init__()
@@ -95,14 +78,6 @@ class _DirectHeatmap(HeatmapRegressionEnsemble):
             heatmaps[:, member, 0, 1, member + 1] = 10
             heatmaps[:, member, 1, 2, member + 2] = 10
         return heatmaps
-
-
-class _DirectAV(ArteryVeinSegmentationEnsemble):
-    def forward(self, image):
-        values = torch.arange(
-            N * M * 4 * H * W, device=image.device, dtype=torch.float32
-        )
-        return values.reshape(N, M, 4, H, W) / 100.0 - 2.0
 
 
 def _config(**inference):
@@ -134,17 +109,11 @@ def _batch(with_context: bool = True):
             (N, H, W, 3),
         ),
         (_DirectOverlaps(_UnusedBackend(), _config()), (N, M, H, W, 2), (N, H, W, 2)),
-        (_DirectLUNet(_UnusedBackend(), _config()), (N, M, H, W, 3), (N, H, W, 3)),
         (RegressionEnsemble(_MemberFirstBackend(4), _config()), (N, M, 4), (N, 4)),
         (ClassificationEnsemble(_MemberFirstBackend(3), _config()), (N, M, 3), (N, 3)),
         (EmbeddingEnsemble(_MemberFirstBackend(5), _config()), (N, M, 5), (N, 5)),
         (KeypointsEnsemble(_MemberFirstBackend(4), _config()), (N, M, 2, 2), (N, 2, 2)),
         (_DirectHeatmap(_UnusedBackend(), _config()), (N, M, 2, 2), (N, 2, 2)),
-        (
-            _DirectAV(_UnusedBackend(), _config()),
-            (N, M, H, W, 4),
-            (N, H, W, 4),
-        ),
     ],
 )
 def test_family_contracts_are_batch_major_and_aggregated(
@@ -166,18 +135,13 @@ def test_family_contracts_are_batch_major_and_aggregated(
     np.testing.assert_allclose(full["aggregate"], aggregate.numpy(), rtol=1e-5)
 
 
-def test_spatial_and_av_intermediates_are_validated():
+def test_spatial_intermediates_are_validated():
     segmentation = _DirectSegmentation(_UnusedBackend(), _config())
     segmentation_full = segmentation.predict_step_full(_batch())
     assert segmentation_full["logits"].shape == (N, H, W, 3)
 
     heatmap = _DirectHeatmap(_UnusedBackend(), _config()).predict_step_full(_batch())
     assert heatmap["heatmaps"].shape == (N, M, 2, H, W)
-
-    av = _DirectAV(_UnusedBackend(), _config()).predict_step_full(_batch())
-    assert av["logits"].shape == (N, H, W, 4)
-    assert av["logit_names"] == tuple(AV_HEAD_NAMES)
-    np.testing.assert_allclose(av["aggregate"].sum(axis=-1), 1.0, atol=1e-6)
 
 
 def test_scalar_regression_is_promoted_to_nc_and_nmc():
@@ -205,17 +169,6 @@ def test_invalid_schema_shapes_and_batch_lengths_fail():
                 "prediction": np.zeros((N, M, H, W)),
                 "aggregate": np.zeros((N, H, W, 2)),
                 "logits": np.zeros((N, H, W, 2)),
-            }
-        )
-    with pytest.raises(ValidationError):
-        ArteryVeinPredictFull.model_validate(
-            {
-                "prediction": np.zeros((N, M, H, W, 6)),
-                "aggregate": np.zeros((N, H, W, 4)),
-                "logits": np.zeros((N, H, W, 4)),
-                "logit_names": AV_HEAD_NAMES,
-                "refinement_mode": "basic",
-                "refinement_parameters": {},
             }
         )
     with pytest.raises(ValidationError):
@@ -289,13 +242,6 @@ def test_segmentation_restores_probabilities_before_argmax():
             _DirectOverlaps(_UnusedBackend(), _config()),
             lambda probabilities: probabilities > 0.5,
         ),
-        (
-            _DirectLUNet(_UnusedBackend(), _config()),
-            lambda probabilities: (
-                (probabilities[..., 0] > 0.5).astype(np.uint8)
-                + 2 * (probabilities[..., 1] > 0.5).astype(np.uint8)
-            ),
-        ),
     ],
 )
 def test_overlap_families_restore_probabilities_before_thresholding(ensemble, expected):
@@ -306,57 +252,13 @@ def test_overlap_families_restore_probabilities_before_thresholding(ensemble, ex
         ],
         dtype=np.float32,
     )
-    if isinstance(ensemble, _DirectOverlaps):
-        probabilities = probabilities[..., :2]
+    probabilities = probabilities[..., :2]
     geometry = {"preprocessed_size": (5, 7), "prediction_size": (2, 2)}
     item = {"id": "x", "aggregate": probabilities, "geometry": geometry}
     processed = ensemble.postprocess_item(item)
     restored = restore_array_to_preprocessed(probabilities, geometry, "bilinear")
     np.testing.assert_array_equal(processed["output"], expected(restored))
     assert processed["probabilities"].shape[:2] == (5, 7)
-
-
-def test_halo_av_refines_before_nearest_restoration(monkeypatch):
-    ensemble = _DirectAV(
-        _UnusedBackend(),
-        _config(graph_refinement={"mode": "full", "direction_cost_weight": 999.0}),
-        refinement_mode="simple",
-        refinement_parameters={"direction_cost_weight": 0.25},
-    )
-    full_item = decollate_predict_full(ensemble.predict_step_full(_batch()))[0]
-    observed = []
-
-    def fake_refine(logits, mode, **kwargs):
-        observed.append((logits.shape, mode, kwargs))
-        return np.ones(logits.shape[:2], dtype=np.uint8)
-
-    monkeypatch.setattr(av_module, "refine_artery_vein", fake_refine)
-    processed = ensemble.postprocess_item(full_item)
-    assert observed[0][0] == (H, W, 4)
-    assert observed[0][1] == "refinement_simple"
-    assert observed[0][2]["direction_cost_weight"] == 0.25
-    assert processed["output"].shape == (H * 2, W * 2)
-    assert processed["output"].dtype == np.uint8
-    assert processed["output_space"] == "preprocessed"
-
-
-def test_halo_av_uses_embedded_refinement_as_default():
-    ensemble = _DirectAV(
-        _UnusedBackend(),
-        _config(graph_refinement={"mode": "full", "direction_cost_weight": 999.0}),
-    )
-    full = ensemble.predict_step_full(_batch())
-    assert full["refinement_mode"] == "refinement_full"
-    assert full["refinement_parameters"]["direction_cost_weight"] == 999.0
-
-
-def test_halo_av_rejects_unknown_constructor_refinement_parameters():
-    with pytest.raises(ValueError, match="Unknown AV refinement parameters"):
-        _DirectAV(
-            _UnusedBackend(),
-            _config(),
-            refinement_parameters={"not_a_parameter": 1},
-        )
 
 
 def test_deprecated_predict_batch_warns_and_preserves_prediction_geometry():

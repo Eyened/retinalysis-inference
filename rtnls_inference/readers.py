@@ -5,7 +5,10 @@ from typing import Union
 import numpy as np
 from PIL import Image
 import torch
-from rtnls_inference.utils import get_all_subclasses_dict
+from rtnls_inference.components import (
+    build_subclass_registry,
+    import_project_components,
+)
 
 
 class MaskReader:
@@ -99,12 +102,30 @@ class VeinsReader(MaskReader):
         return ((im == 2) | (im == 3)).astype(np.uint8)
 
 
-readers = get_all_subclasses_dict(MaskReader)
+_readers: dict[str, type[MaskReader]] | None = None
+
+
+def get_mask_reader_registry() -> dict[str, type[MaskReader]]:
+    global _readers
+    import_project_components()
+    if _readers is None:
+        _readers = build_subclass_registry(MaskReader)
+    return _readers
 
 
 def make_mask_reader(config):
     if config is None:
         config = {}
-    reader_class = readers.get(config.get("class", None), DefaultMaskReader)
-
+    class_name = config.get("class")
+    if class_name is None:
+        reader_class = DefaultMaskReader
+    else:
+        registry = get_mask_reader_registry()
+        try:
+            reader_class = registry[class_name]
+        except KeyError as exc:
+            known = ", ".join(sorted(registry))
+            raise ValueError(
+                f"Unknown mask reader class {class_name!r}. Known classes: {known}"
+            ) from exc
     return reader_class(**config)
