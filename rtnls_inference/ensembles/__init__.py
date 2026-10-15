@@ -74,7 +74,7 @@ def get_ensemble_class(config) -> type[Ensemble]:
     except ImportError as exc:
         raise ImportError(
             "Release config has no inference.ensemble_class and rtnls_models is "
-            "not installed. Install rtnls-models or re-export the release."
+            "not installed. Install retinalysis-models or re-export the release."
         ) from exc
 
     model_class = get_model_class(config)
@@ -128,7 +128,7 @@ def make_ensemble_from_checkpoints(
     except ImportError as exc:
         raise ImportError(
             "Loading checkpoints requires the optional runtime dependency "
-            "`rtnls_models`. Install rtnls-models or use a TorchScript release."
+            "`rtnls_models`. Install retinalysis-models or use a TorchScript release."
         ) from exc
 
     if checkpoints is None:
