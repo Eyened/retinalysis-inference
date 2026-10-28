@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from rtnls_inference.inputs import validate_ids
+
 try:
     import simplejpeg  # type: ignore
 except Exception:  # pragma: no cover
@@ -74,15 +76,45 @@ def collate_except_metadata(batch):
     batch = list(filter(lambda x: x is not None, batch))
     if not batch:
         raise ValueError("Batch is empty")
+    identifiers = validate_ids(item.get("id") for item in batch)
     collated = {}
     for key in batch[0].keys():
-        if key == "metadata":
+        if key == "id":
+            collated[key] = identifiers
+        elif key == "metadata":
             collated[key] = [item[key] for item in batch]
         else:
             collated[key] = torch.utils.data.default_collate(
                 [item[key] for item in batch]
             )
     return collated
+
+
+def collate_inference_items(items):
+    """Batch prepared inputs, keeping heterogeneous metadata on the CPU.
+
+    ``None`` entries are failed inputs from a dataset with ignore_exceptions=True.
+    An entirely failed batch is represented by an empty mapping.
+    """
+    items = [item for item in items if item is not None]
+    if not items:
+        return {}
+    for item in items:
+        image = item.get("image")
+        if not isinstance(image, torch.Tensor) or image.ndim != 3:
+            raise ValueError("Prepared item['image'] must be a CHW torch.Tensor")
+    keys = dict.fromkeys(key for item in items for key in item)
+    batch = {"id": validate_ids(item.get("id") for item in items)}
+    for key in keys:
+        if key == "id":
+            continue
+        elif key == "metadata":
+            batch[key] = [item.get(key, {}) for item in items]
+        else:
+            if any(key not in item for item in items):
+                raise ValueError(f"Prepared inputs have inconsistent fields: {key!r}")
+            batch[key] = torch.utils.data.default_collate([item[key] for item in items])
+    return batch
 
 
 def decollate_batch(batch):

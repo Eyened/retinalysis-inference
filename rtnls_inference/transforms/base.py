@@ -5,6 +5,46 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 
+def add_spatial_targets(transform, mapping):
+    """Bind dataset targets while preserving existing target mappings.
+
+    Image targets retain continuous spatial interpolation and CHW tensor
+    conversion, but bypass image-only augmentation and normalization.
+    """
+    if not mapping:
+        return
+    visited = set()
+
+    def bind(value):
+        if id(value) in visited:
+            return
+        visited.add(id(value))
+        if isinstance(value, A.BaseCompose):
+            if isinstance(value, A.Compose):
+                value.additional_targets = {**value.additional_targets, **mapping}
+            for child in value.transforms:
+                bind(child)
+        elif isinstance(value, A.BasicTransform):
+            targets = dict(value._additional_targets)
+            targets.update(
+                {
+                    name: "mask"
+                    if target == "image" and isinstance(value, A.ImageOnlyTransform)
+                    else target
+                    for name, target in mapping.items()
+                }
+            )
+            value.add_targets(targets)
+        elif isinstance(value, dict):
+            for child in value.values():
+                bind(child)
+        elif isinstance(value, (list, tuple, set)):
+            for child in value:
+                bind(child)
+
+    bind(vars(transform))
+
+
 class TestTransform:
     def __init__(self, normalize="imagenet"):
         transforms = []
@@ -47,26 +87,8 @@ class TestTransform:
         )
 
     def add_targets(self, mapping):
-        """Add dataset-owned targets to every Albumentations composition."""
-        if not mapping:
-            return
-        visited = set()
-
-        def bind(value):
-            if id(value) in visited:
-                return
-            visited.add(id(value))
-            if isinstance(value, A.BaseCompose):
-                value.add_targets(mapping)
-            elif isinstance(value, dict):
-                for child in value.values():
-                    bind(child)
-            elif isinstance(value, (list, tuple, set)):
-                for child in value:
-                    bind(child)
-
-        for value in vars(self).values():
-            bind(value)
+        """Add dataset-owned spatial targets to the transform pipeline."""
+        add_spatial_targets(self, mapping)
 
     @abstractmethod
     def undo_item(self, item: Dict[str, Any], preprocess: bool = False):

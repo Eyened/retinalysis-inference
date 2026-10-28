@@ -1,9 +1,10 @@
 import warnings
 from typing import Any, Dict, Optional
 
+import numpy as np
 import torch
 
-from rtnls_inference.dtos_inference import InferenceDatasetDTO, ModelInputDTO
+from rtnls_inference.inputs import image_inputs_adapter, loaded_rgb, validate_ids
 from rtnls_inference.readers import BinaryMaskReader, MaskReader
 from rtnls_inference.transforms.base import TestTransform
 from rtnls_inference.utils import load_image
@@ -12,10 +13,7 @@ from .base import TestDataset
 
 
 class FundusInferenceDataset(TestDataset):
-    """Strict fundus prediction dataset accepting only ``ModelInputDTO`` fields."""
-
-    item_dto_cls = ModelInputDTO
-    dataset_dto_cls = InferenceDatasetDTO[ModelInputDTO]
+    """Strict prediction records with paths or loaded RGB images."""
 
     def __init__(
         self,
@@ -25,8 +23,10 @@ class FundusInferenceDataset(TestDataset):
         input_mask_reader: Optional[MaskReader] = None,
         **kwargs,
     ):
-        definition = self.dataset_dto_cls.model_validate(data)
-        self.data = definition.to_serialized_images()
+        if not isinstance(data, dict) or set(data) != {"images"}:
+            raise ValueError("Inference data must contain only an 'images' collection")
+        self.data = image_inputs_adapter.validate_python(data["images"])
+        self.validate_ids()
         self.transform = transform
         self.ignore_exceptions = ignore_exceptions
         self.input_mask_reader = input_mask_reader or BinaryMaskReader()
@@ -35,12 +35,20 @@ class FundusInferenceDataset(TestDataset):
         return len(self.data)
 
     def get_id(self, idx):
-        return self.data[idx]["id"]
+        return self.data[idx].get("id")
+
+    def validate_ids(self, *, for_output=False):
+        validate_ids((entry.get("id") for entry in self.data), for_output=for_output)
 
     def _open_image(self, entry):
-        image_path = entry.get("image")
+        source = entry.get("image")
         ce_path = entry.get("contrast_enhanced")
-        image = load_image(image_path) if image_path else None
+        # Give transforms their own pixels so callers' loaded images stay intact.
+        image = (
+            source.copy()
+            if isinstance(source, np.ndarray)
+            else (loaded_rgb(load_image(source)) if source else None)
+        )
         ce = load_image(ce_path) if ce_path else None
         return image, ce
 
@@ -52,7 +60,7 @@ class FundusInferenceDataset(TestDataset):
         entry = self.data[idx]
         image, ce = self._open_image(entry)
         item = {
-            "id": entry["id"],
+            "id": entry.get("id"),
             "image": image,
             "input_mask": self._open_input_mask(entry),
             "metadata": entry.get("metadata"),
@@ -69,6 +77,7 @@ class FundusInferenceDataset(TestDataset):
             )
         if "ce" in item:
             item["image"] = torch.cat([item["image"], item.pop("ce")], dim=0)
+        item["id"] = entry.get("id")
         return item
 
     def __getitem__(self, idx):

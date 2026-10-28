@@ -1,17 +1,10 @@
-import numpy as np
-import pandas as pd
 import torch
 from monai.inferers import sliding_window_inference
-from pydantic import Field, model_validator
-from tqdm import tqdm
 
 from rtnls_inference.ensembles.ensemble_keypoints import (
     KeypointsEnsemble,
-    KeypointsPredictFull,
 )
-from rtnls_inference.ensembles.predict_output import (
-    decollate_predict_full,
-)
+from rtnls_inference.ensembles.predict_output import require_tensor
 from rtnls_inference.ensembles.utils import EnsembleSplitter
 from rtnls_inference.utils import extract_keypoints_from_heatmaps
 
@@ -20,28 +13,7 @@ def flip(data, axis):
     return torch.flip(data, dims=axis)
 
 
-class HeatmapRegressionPredictFull(KeypointsPredictFull):
-    """Keypoint predictions with optional per-member heatmaps."""
-
-    heatmaps: np.ndarray | None = Field(
-        default=None,
-        description="Optional per-member heatmaps as NMKHW.",
-    )
-
-    @model_validator(mode="after")
-    def validate_heatmaps(self):
-        if self.heatmaps is not None:
-            if self.heatmaps.ndim != 5:
-                raise ValueError("heatmaps must have shape NMKHW")
-            if self.heatmaps.shape[:3] != self.prediction.shape[:3]:
-                raise ValueError(
-                    "heatmap and keypoint batch/member/keypoint axes differ"
-                )
-        return self
-
-
 class HeatmapRegressionEnsemble(KeypointsEnsemble):
-    predict_full_model = HeatmapRegressionPredictFull
     autocast_inference = True
 
     def forward(self, img):
@@ -83,10 +55,12 @@ class HeatmapRegressionEnsemble(KeypointsEnsemble):
 
     def _predict_member_tensors(self, batch):
         heatmaps = self.forward(batch["image"])
+        require_tensor(heatmaps, "heatmaps", rank=5)
         return extract_keypoints_from_heatmaps(heatmaps)
 
     def _predict_step_tensors(self, batch):
         heatmaps = self.forward(batch["image"])
+        require_tensor(heatmaps, "heatmaps", rank=5)
         prediction = extract_keypoints_from_heatmaps(heatmaps)
         return {
             "prediction": prediction,
@@ -98,24 +72,6 @@ class HeatmapRegressionEnsemble(KeypointsEnsemble):
         heatmaps = output["heatmaps"]
         return int(heatmaps.shape[-2]), int(heatmaps.shape[-1])
 
-    def _predict_dataloader(self, dataloader, dest_path=None):
-        with torch.no_grad():
-            all_kps = []
-            all_ids = []
-            for batch in tqdm(dataloader):
-                if len(batch) == 0:
-                    continue
-
-                items = [
-                    self.postprocess_item(item)
-                    for item in decollate_predict_full(self.predict_step_full(batch))
-                ]
-                all_ids += [item["id"] for item in items]
-                all_kps += [item["keypoints"] for item in items]
-
-            if not all_kps:
-                return pd.DataFrame(index=all_ids)
-            columns = [(f"x{i}", f"y{i}") for i in range(len(all_kps[0]))]
-            columns = [item for sublist in columns for item in sublist]
-            all_kps = [kp.flatten() for kp in all_kps]
-            return pd.DataFrame(all_kps, index=all_ids, columns=columns)
+    def _summary_columns(self, count=0):
+        count = count or 2 * self.config.get("lightningmodule", {}).get("n_class", 0)
+        return super()._summary_columns(count)

@@ -13,9 +13,6 @@ from rtnls_inference.ensembles.ensemble_embedding import EmbeddingEnsemble  # no
 from rtnls_inference.ensembles.ensemble_heatmap_regression import (  # noqa: F401
     HeatmapRegressionEnsemble,
 )
-from rtnls_inference.ensembles.ensemble_halo_segmentation import (  # noqa: F401
-    HaloSegmentationEnsemble,
-)
 from rtnls_inference.ensembles.ensemble_keypoints import KeypointsEnsemble  # noqa: F401
 from rtnls_inference.ensembles.ensemble_regression import (
     RegressionEnsemble,  # noqa: F401
@@ -23,17 +20,12 @@ from rtnls_inference.ensembles.ensemble_regression import (
 from rtnls_inference.ensembles.ensemble_segmentation import (  # noqa: F401
     SegmentationEnsemble,
 )
-from rtnls_inference.ensembles.ensemble_segmentation_overlaps import (  # noqa: F401
-    SegmentationEnsembleOverlaps,
-)
 from rtnls_inference.ensembles.onnx_backend import (
     OnnxEnsembleBackend,
     load_config_from_onnx,
 )
 from rtnls_inference.ensembles.predict_output import (  # noqa: F401
-    PredictFullOutput,
-    PredictionGeometry,
-    decollate_predict_full,
+    unbatch_predictions,
     restore_array_to_preprocessed,
     restore_points_to_preprocessed,
 )

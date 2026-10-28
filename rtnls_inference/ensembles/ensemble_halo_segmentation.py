@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-from rtnls_inference.ensembles.ensemble_segmentation import SegmentationEnsemble
+
+from rtnls_inference.ensembles.predict_output import require_tensor
 
 
 def _tile_positions(length: int, output_size: int, stride: int) -> list[int]:
@@ -40,8 +41,13 @@ def halo_sliding_window_inference(
     sigma_scale: float = 0.125,
 ) -> torch.Tensor:
     """Stitch central halo predictions from a model or model ensemble."""
-    if image.ndim != 4:
-        raise ValueError(f"Expected NCHW input, got {image.shape}")
+    require_tensor(image, "halo image", rank=4, floating=True)
+    if context_size <= 0 or output_size <= 0:
+        raise ValueError(
+            f"context_size/output_size must be positive, got {context_size}/{output_size}"
+        )
+    if sw_batch_size <= 0:
+        raise ValueError(f"sw_batch_size must be positive, got {sw_batch_size}")
     if context_size <= output_size or (context_size - output_size) % 2:
         raise ValueError("context_size/output_size do not define a symmetric halo")
     if not 0 <= overlap < 1:
@@ -57,6 +63,7 @@ def halo_sliding_window_inference(
 
     sample_outputs: list[torch.Tensor] = []
     predictor_has_model_axis: bool | None = None
+    member_channels = None
     for sample in image:
         height, width = sample.shape[-2:]
         canvas_h, canvas_w = max(height, output_size), max(width, output_size)
@@ -90,6 +97,7 @@ def halo_sliding_window_inference(
                 ]
             )
             predictions = predictor(tiles)
+            require_tensor(predictions, "halo prediction", floating=True)
             has_model_axis = predictions.ndim == 5
             if predictions.ndim == 4:
                 predictions = predictions[None]
@@ -100,7 +108,20 @@ def halo_sliding_window_inference(
             if predictor_has_model_axis is None:
                 predictor_has_model_axis = has_model_axis
             elif predictor_has_model_axis != has_model_axis:
-                raise RuntimeError("Predictor output rank changed between tile batches")
+                raise ValueError("halo prediction rank changed between tile batches")
+            if predictions.shape[1] != len(chunk_positions):
+                raise ValueError(
+                    f"halo prediction batch size must be {len(chunk_positions)}, got {predictions.shape[1]}"
+                )
+            current_member_channels = (predictions.shape[0], predictions.shape[2])
+            if (
+                member_channels is not None
+                and member_channels != current_member_channels
+            ):
+                raise ValueError(
+                    f"halo prediction member/channel counts must remain {member_channels}, got {current_member_channels}"
+                )
+            member_channels = current_member_channels
             if predictions.shape[-2:] != (output_size, output_size):
                 raise ValueError(
                     f"Halo predictor returned {predictions.shape[-2:]}; "
@@ -135,19 +156,3 @@ def halo_sliding_window_inference(
     if predictor_has_model_axis:
         return output.permute(1, 0, 2, 3, 4)  # N,M,C,H,W
     return output[0]  # N,C,H,W
-
-
-class HaloSegmentationEnsemble(SegmentationEnsemble):
-    """Generic softmax segmentation ensemble for center-cropped halo models."""
-
-    def sliding_window_inference(self, image: torch.Tensor) -> torch.Tensor:
-        model_config = self.config.get("lightningmodule", {})
-        return halo_sliding_window_inference(
-            image,
-            self.ensemble,
-            context_size=int(model_config.get("context_size", 768)),
-            output_size=int(model_config.get("output_size", 512)),
-            overlap=float(self._inference_setting("overlap", 0.5)),
-            sw_batch_size=self._tile_batch_size(1, legacy_batch_size=True),
-            sigma_scale=float(self._inference_setting("gaussian_sigma_scale", 0.125)),
-        )

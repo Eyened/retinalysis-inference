@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from rtnls_inference.ensembles.predict_output import require_tensor
+
 
 class EnsembleAverager(nn.Module):
     """Averages the first dimension of the ensemble output, which is the model dimension (nfolds)"""
@@ -21,6 +23,10 @@ class EnsembleSplitter(nn.Module):
         self.ensemble = ensemble
 
     def forward(self, x):
-        x = self.ensemble(x)
-        x = torch.unbind(x, dim=0)
-        return x
+        prediction = self.ensemble(x)
+        require_tensor(prediction, "tile prediction", rank=5, floating=True)
+        if prediction.shape[1] != x.shape[0]:
+            raise ValueError(
+                f"tile prediction batch size must be {x.shape[0]}, got {prediction.shape[1]}"
+            )
+        return torch.unbind(prediction, dim=0)

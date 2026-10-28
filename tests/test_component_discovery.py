@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
+
+import pytest
 
 
-def _run(cwd: Path, code: str):
+@pytest.fixture
+def project_root(tmp_path):
+    """Create the package layout used by project-local components."""
+    for relative in (
+        ".",
+        "rtnls_components",
+        "rtnls_components/transforms",
+        "rtnls_components/transforms/test",
+        "rtnls_components/datasets",
+    ):
+        directory = tmp_path / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").touch()
+    return tmp_path
+
+
+def _run(cwd: Path, code: str, *, pythonpath: tuple[Path, ...] = ()):
     environment = os.environ.copy()
     package_root = str(Path(__file__).resolve().parents[1])
+    # Make fixture packages importable without installing them into the environment.
     environment["PYTHONPATH"] = os.pathsep.join(
-        [package_root, environment.get("PYTHONPATH", "")]
+        [package_root, *map(str, pythonpath), environment.get("PYTHONPATH", "")]
     )
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -19,6 +38,7 @@ def _run(cwd: Path, code: str):
         env=environment,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -33,9 +53,9 @@ def _write_transform(path: Path, class_name: str, extra: str = "") -> None:
     )
 
 
-def test_package_free_components_import_once_in_sorted_order(tmp_path):
-    log = tmp_path / "imports.txt"
-    component_root = tmp_path / "rtnls_components" / "transforms" / "test"
+def test_packaged_components_import_once_in_sorted_order(project_root):
+    log = project_root / "imports.txt"
+    component_root = project_root / "rtnls_components" / "transforms" / "test"
     _write_transform(
         component_root / "z_last.py",
         "ZLastTransform",
@@ -48,7 +68,7 @@ def test_package_free_components_import_once_in_sorted_order(tmp_path):
     )
 
     result = _run(
-        tmp_path,
+        project_root,
         """
         from rtnls_inference.transforms import get_test_transform_registry
         first = get_test_transform_registry()
@@ -56,18 +76,18 @@ def test_package_free_components_import_once_in_sorted_order(tmp_path):
         assert first is second
         assert {'AFirstTransform', 'ZLastTransform'} <= set(first)
         """,
+        pythonpath=(project_root.parent,),
     )
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == ["a", "z"]
-    assert not list((tmp_path / "rtnls_components").rglob("__init__.py"))
 
 
-def test_discovery_uses_exact_cwd_and_never_searches_parents(tmp_path):
+def test_discovery_uses_exact_cwd_and_never_searches_parents(project_root):
     _write_transform(
-        tmp_path / "rtnls_components" / "transforms" / "parent.py",
+        project_root / "rtnls_components" / "transforms" / "parent.py",
         "ParentOnlyTransform",
     )
-    child = tmp_path / "child"
+    child = project_root / "child"
     child.mkdir()
     result = _run(
         child,
@@ -75,40 +95,63 @@ def test_discovery_uses_exact_cwd_and_never_searches_parents(tmp_path):
         from rtnls_inference.transforms import get_test_transform_registry
         assert 'ParentOnlyTransform' not in get_test_transform_registry()
         """,
+        pythonpath=(project_root.parent,),
     )
     assert result.returncode == 0, result.stderr
 
 
-def test_import_failure_reports_file_and_preserves_cause(tmp_path):
-    broken = tmp_path / "rtnls_components" / "datasets" / "broken.py"
-    broken.parent.mkdir(parents=True)
+def test_import_failure_reports_file_and_preserves_cause(project_root):
+    broken = project_root / "rtnls_components" / "datasets" / "broken.py"
     broken.write_text("raise ValueError('project boom')\n")
     result = _run(
-        tmp_path,
+        project_root,
         """
         from rtnls_inference.components import import_project_components
         import_project_components()
         """,
+        pythonpath=(project_root.parent,),
     )
     assert result.returncode != 0
     assert str(broken) in result.stderr
     assert "ValueError: project boom" in result.stderr
 
 
-def test_duplicate_component_names_are_fatal(tmp_path):
+def test_duplicate_component_names_are_fatal(project_root):
     _write_transform(
-        tmp_path / "rtnls_components" / "transforms" / "duplicate.py",
+        project_root / "rtnls_components" / "transforms" / "duplicate.py",
         "FundusTestTransform",
     )
     result = _run(
-        tmp_path,
+        project_root,
         """
         from rtnls_inference.transforms import get_test_transform_registry
         get_test_transform_registry()
         """,
+        pythonpath=(project_root.parent,),
     )
     assert result.returncode != 0
-    assert "Duplicate TestTransform component name 'FundusTestTransform'" in result.stderr
+    assert (
+        "Duplicate TestTransform component name 'FundusTestTransform'" in result.stderr
+    )
+
+
+def test_unimportable_project_reports_install_command(project_root):
+    result = _run(
+        project_root,
+        """
+        from rtnls_inference.components import import_project_components
+        import_project_components()
+        """,
+    )
+    assert result.returncode != 0
+    package_name = f"{project_root.name}.rtnls_components"
+    assert (
+        f"Project components package {package_name!r} is not installed" in result.stderr
+    )
+    assert f"Run: pip install -e {project_root}" in result.stderr
+    assert (
+        f"ModuleNotFoundError: No module named {project_root.name!r}" in result.stderr
+    )
 
 
 def test_process_is_bound_to_first_working_directory(tmp_path):

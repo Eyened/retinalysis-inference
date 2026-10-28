@@ -1,22 +1,21 @@
-import os
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import torch
 from monai.inferers import sliding_window_inference
-from PIL import Image
-from pydantic import Field, model_validator
-from tqdm import tqdm
 
+from rtnls_inference.ensembles.output_files import (
+    MANIFEST_COLUMNS,
+    output_suffix,
+    prepare_export,
+    save_output_item,
+)
 from rtnls_inference.ensembles.predict_output import (
-    PredictFullOutput,
-    decollate_predict_full,
     output_manifest_row,
-    require_rank,
+    require_tensor,
     restore_array_to_preprocessed,
 )
 from rtnls_inference.ensembles.utils import EnsembleSplitter
+from rtnls_inference.inputs import validate_ids
 from rtnls_inference.metrics import Dice
 
 from .base import FundusEnsemble
@@ -31,32 +30,7 @@ def flip(data, axis):
     return torch.flip(data, dims=axis)
 
 
-class SegmentationPredictFull(PredictFullOutput):
-    logits: np.ndarray = Field(
-        description="Ensemble-averaged pre-softmax logits as NHWC."
-    )
-
-    @model_validator(mode="after")
-    def validate_segmentation(self):
-        require_rank(self.prediction, 5, "prediction")
-        require_rank(self.aggregate, 4, "aggregate")
-        require_rank(self.logits, 4, "logits")
-        if self.prediction.shape[2:] != self.logits.shape[1:]:
-            raise ValueError("member logits and averaged logits shapes differ")
-        if self.aggregate.shape != self.logits.shape:
-            raise ValueError("aggregate probabilities and logits shapes differ")
-        if not all(
-            np.issubdtype(value.dtype, np.floating)
-            for value in (self.prediction, self.aggregate, self.logits)
-        ):
-            raise ValueError(
-                "segmentation predictions and logits must be floating point"
-            )
-        return self
-
-
 class SegmentationEnsemble(FundusEnsemble):
-    predict_full_model = SegmentationPredictFull
     autocast_inference = True
 
     def __init__(self, *args, postprocess_fn=None, **kwargs):
@@ -70,7 +44,9 @@ class SegmentationEnsemble(FundusEnsemble):
         return self.sliding_window_inference(img)
 
     def _predict_member_tensors(self, batch):
-        return self.forward(batch["image"]).permute(0, 1, 3, 4, 2)
+        prediction = self.forward(batch["image"])
+        require_tensor(prediction, "segmentation prediction", rank=5, floating=True)
+        return prediction.permute(0, 1, 3, 4, 2)
 
     def _aggregate_tensors(self, member_output):
         return torch.softmax(member_output.mean(dim=1), dim=-1)
@@ -85,6 +61,11 @@ class SegmentationEnsemble(FundusEnsemble):
             )
         logits = prediction.mean(dim=1)
         aggregate = self._aggregate_tensors(prediction)
+        require_tensor(aggregate, "aggregate", rank=4, floating=True)
+        if aggregate.shape != logits.shape:
+            raise ValueError(
+                f"prediction and aggregate output shapes differ: expected {tuple(logits.shape)}, got {tuple(aggregate.shape)}"
+            )
         return {"prediction": prediction, "logits": logits, "aggregate": aggregate}
 
     def _prediction_size(self, batch, output):
@@ -141,39 +122,30 @@ class SegmentationEnsemble(FundusEnsemble):
             result["preprocessed_image"] = item["preprocessed_image"]
         return result
 
-    @staticmethod
-    def _save_item(item: dict, dest_path: str | Path):
-        Image.fromarray(np.asarray(item["output"], dtype=np.uint8)).save(dest_path)
+    def predict_dataloader(self, dataloader, dest_path=None, *, overwrite=False):
+        """Write final masks incrementally and return their manifest.
 
-    def _compatibility_items(self, full_output):
-        return [
-            {"id": item.get("id"), "image": item["aggregate"]}
-            for item in decollate_predict_full(full_output)
-        ]
-
-    def _predict_output_batch(self, batch: dict) -> list[dict]:
-        return [
-            self.postprocess_item(item)
-            for item in decollate_predict_full(self.predict_step_full(batch))
-        ]
-
-    def _predict_dataloader(
-        self,
-        dataloader,
-        dest_path,
-    ):
+        Use iter_predictions for in-memory consumption of spatial outputs.
+        """
         if dest_path is None:
-            raise ValueError("dest_path is required for spatial prediction output")
-        os.makedirs(dest_path, exist_ok=True)
-        manifest = []
-        for batch in tqdm(dataloader):
-            if len(batch) == 0:
-                continue
-            for item in self._predict_output_batch(batch):
-                fpath = Path(dest_path) / f"{item['id']}.png"
-                self._save_item(item, fpath)
-                manifest.append(output_manifest_row(item, str(fpath)))
-        return pd.DataFrame(manifest)
+            raise ValueError(
+                "dest_path is required for segmentation; use iter_predictions for in-memory results"
+            )
+        manifest_path = prepare_export(
+            dataloader, dest_path, "manifest.csv", overwrite=overwrite
+        )
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for item in self.iter_predictions(dataloader):
+            identifier = validate_ids([item.get("id")], for_output=True)[0]
+            path = manifest_path.parent / f"{identifier}{output_suffix(item)}"
+            if path.exists() and not overwrite:
+                raise FileExistsError(path)
+            save_output_item(item, path)
+            rows.append(output_manifest_row(item, str(path)))
+        manifest = pd.DataFrame(rows, columns=MANIFEST_COLUMNS)
+        manifest.to_csv(manifest_path, index=False)
+        return manifest
 
     def on_test_start(self):
         self.dice = Dice(self.config["lightningmodule"].get("n_class", 2))

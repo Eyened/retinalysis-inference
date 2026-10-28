@@ -87,7 +87,10 @@ class FundusTestTransform(TestTransform):
                 else:  # else we compute the bounds of the provided image
                     bounds = get_cfi_bounds(item["image"])
 
-                item["ce"] = bounds.contrast_enhanced_5
+                # Restored bounds contain geometry only; supply the RGB pixels.
+                item["ce"] = bounds.make_contrast_enhanced_res256(
+                    image=item["image"], sigma_fraction=0.05
+                )
         else:
             # hack: make sure that 'ce' is not passed when it comes from the dataset
             if "ce" in item:

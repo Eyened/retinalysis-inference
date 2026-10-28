@@ -1,77 +1,67 @@
-from __future__ import annotations
-
-import numpy as np
+import pytest
 import torch
-from rtnls_inference.ensembles import (
-    HaloSegmentationEnsemble,
-    get_ensemble_class,
+
+from rtnls_inference.ensembles.ensemble_halo_segmentation import (
+    halo_sliding_window_inference,
 )
 
 
-class ConstantHaloMembers(torch.nn.Module):
-    def __init__(self, output_size: int):
-        super().__init__()
-        self.output_size = output_size
-        self.tile_count = 0
+@pytest.mark.parametrize("members", [False, True])
+def test_halo_tiler_reconstructs_center_crops_without_losing_border_pixels(members):
+    image = torch.arange(2 * 3 * 19 * 27, dtype=torch.float32).reshape(2, 3, 19, 27)
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        self.tile_count += image.shape[0]
-        foreground = torch.ones(
-            (image.shape[0], self.output_size, self.output_size),
-            device=image.device,
-            dtype=image.dtype,
+    def predictor(tiles):
+        centers = tiles[..., 2:-2, 2:-2]
+        return torch.stack([centers, centers + 1]) if members else centers
+
+    output = halo_sliding_window_inference(
+        image,
+        predictor,
+        context_size=12,
+        output_size=8,
+        overlap=0.5,
+        sw_batch_size=3,
+    )
+    expected = torch.stack([image, image + 1], dim=1) if members else image
+    torch.testing.assert_close(output, expected)
+
+
+@pytest.mark.parametrize(
+    "prediction, error, message",
+    [
+        (None, TypeError, "halo prediction.*torch.Tensor"),
+        (torch.zeros(1, 1, 4, 4, dtype=torch.int64), TypeError, "floating point"),
+        (torch.zeros(1, 1, 4), ValueError, "Halo predictor must return"),
+        (
+            torch.zeros(2, 1, 4, 4),
+            ValueError,
+            "halo prediction batch size must be 1, got 2",
+        ),
+        (torch.zeros(1, 1, 3, 4), ValueError, "Halo predictor returned"),
+    ],
+)
+def test_halo_predictor_reports_malformed_tile_outputs(prediction, error, message):
+    with pytest.raises(error, match=message):
+        halo_sliding_window_inference(
+            torch.zeros(1, 3, 4, 4),
+            lambda image: prediction,
+            context_size=8,
+            output_size=4,
         )
-        logits = torch.stack([torch.zeros_like(foreground), foreground], dim=1)
-        return logits[None]
 
 
-def make_ensemble(*, tta: bool = False):
-    members = ConstantHaloMembers(output_size=512)
-    config = {
-        "lightningmodule": {
-            "n_class": 2,
-            "context_size": 768,
-            "output_size": 512,
-        },
-        "inference": {
-            "ensemble_class": "HaloSegmentationEnsemble",
-            "overlap": 0.5,
-            "batch_size": 16,
-            "tta": tta,
-            "tta_flips": [[2], [3], [2, 3]],
-        },
-    }
-    return HaloSegmentationEnsemble(members, config), members
+def test_halo_predictor_rejects_member_count_changes_between_tiles():
+    calls = 0
 
+    def predictor(image):
+        nonlocal calls
+        calls += 1
+        return torch.zeros(calls, len(image), 2, 4, 4)
 
-def test_halo_ensemble_reconstructs_1280_probabilities_and_binary_mask():
-    ensemble, members = make_ensemble()
-    batch = {"id": ["drusen"], "image": torch.zeros((1, 3, 1280, 1280))}
-
-    full = ensemble.predict_step_full(batch)
-
-    assert full["prediction"].shape == (1, 1, 1280, 1280, 2)
-    assert full["logits"].shape == (1, 1280, 1280, 2)
-    assert full["aggregate"].shape == (1, 1280, 1280, 2)
-    np.testing.assert_allclose(full["aggregate"].sum(axis=-1), 1.0, atol=1e-6)
-    assert members.tile_count == 16
-
-    item = ensemble._predict_output_batch(batch)[0]
-    assert item["output"].shape == (1280, 1280)
-    assert item["output"].dtype == np.uint8
-    assert np.all(item["output"] == 1)
-
-
-def test_halo_ensemble_tta_keeps_shape_and_undoes_flips():
-    ensemble, members = make_ensemble(tta=True)
-    output = ensemble.forward(torch.zeros((1, 3, 1280, 1280)))
-
-    assert output.shape == (1, 1, 2, 1280, 1280)
-    assert members.tile_count == 64
-    torch.testing.assert_close(output[:, :, 0], torch.zeros_like(output[:, :, 0]))
-    torch.testing.assert_close(output[:, :, 1], torch.ones_like(output[:, :, 1]))
-
-
-def test_halo_ensemble_is_discoverable_from_release_config():
-    config = {"inference": {"ensemble_class": "HaloSegmentationEnsemble"}}
-    assert get_ensemble_class(config) is HaloSegmentationEnsemble
+    with pytest.raises(ValueError, match="member/channel counts must remain"):
+        halo_sliding_window_inference(
+            torch.zeros(1, 3, 8, 8),
+            predictor,
+            context_size=8,
+            output_size=4,
+        )

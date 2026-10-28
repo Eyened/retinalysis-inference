@@ -1,82 +1,102 @@
-## Retinalysis models inference
+# Retinalysis inference
 
-This repository implements inference ensembles for retinalysis model releases. It includes the same pre-processing code that was used to train the models. For example, fundus preprocessing will detect bounds, crop the smalles square that contains these bounds, and resize it to a fixed resolution, currently 1024x1024px.
+Run model ensembles for ophthalmic image classification, regression, segmentation
+and keypoint localisation. The library handles preprocessing, prediction and
+postprocessing, and is used by VascX for fundus image analysis.
 
-- VascX models are available in [this huggingface repository](https://huggingface.co/Eyened/vascx) but don't need to be downloaded manually. See [this notebook](./notebooks/inference.ipynb).
+Models can be loaded from local files or Hugging Face. You can also train your
+own models with [retinalysis-models](https://github.com/eyened/retinalysis-models).
 
-Models have been tested to run on a single nvidia GPU with at least 10GB VRAM. Using them for distributed inference in multiple GPUs will require some adaptation.
+## Installation
 
-### Inference contracts
-
-Inference has two batch methods because they serve different hardware and consumers:
-
-- `predict_step({"image": tensor}) -> Tensor` is the GPU primitive. It returns the decoded, member-aggregated `N...` tensor without a CUDA synchronization, CPU refinement, resizing, or file I/O.
-- `predict_step_full(batch) -> dict` is the inspection primitive. It returns a Pydantic-validated plain dictionary containing per-member NumPy values in `NM...` order, the aggregate in `N...` order, intermediates such as averaged logits, and canonical preprocessing context when the batch came from a package dataloader.
-
-The two methods intentionally expose different arrays: `full["prediction"]` retains the member axis, while `full["aggregate"]` is the NumPy representation of `predict_step`.
-
-Two higher-level methods handle datasets:
-
-- `predict_preprocessed(data, dest_path=None, ...)` accepts images already in canonical fundusprep space.
-- `predict_dataframe(df, ..., preprocess=True)` accepts a table and may preprocess raw inputs first.
-
-High-level spatial outputs always end in canonical preprocessed geometry, normally 1024×1024. The package does not convert results back to the original photograph geometry. `predict_step` and raw arrays in `predict_step_full` remain in model prediction geometry; call `postprocess_item` on a decollated full item to run family-specific CPU refinement and resize-only canonical restoration.
-
-`predict` and `predict_dataset` remain undocumented raw-input compatibility entrypoints. `_predict_batch` remains temporarily available as a prediction-geometry adapter and emits `FutureWarning`.
-
-| Family | `prediction` | `aggregate` | Full-output intermediates |
-|---|---|---|---|
-| Regression/classification | `NMC` | `NC` | — |
-| Segmentation | `NMHWC` member logits | `NHWC` softmax | averaged `logits: NHWC` |
-| Overlap/LUNet | `NMHWC` member logits | `NHWC` sigmoid | averaged `logits: NHWC` |
-| Embedding | `NMD` | `ND` | — |
-| Keypoints | `NMK2` | `NK2` | — |
-| Heatmap | `NMK2` | `NK2` | optional `heatmaps: NMKHW` |
-| Halo artery/vein | `NMHW4` member logits | `NHW4` probabilities | averaged `logits: NHW4`, exact four names and runtime refinement configuration |
-
-### Configuring inference
-
-Runtime settings from `config.inference` can be overridden when constructing an ensemble. Constructor values win over the release defaults. Nested mappings such as `graph_refinement` are merged field by field.
-
-```python
-ensemble = make_ensemble(
-    release_path,
-    tta=False,
-    overlap=0.25,
-    tile_batch_size=8,
-    graph_refinement={"mode": "full", "direction_cost_weight": 0.0},
-)
-```
-
-- `batch_size` is the image/dataloader batch size.
-- `tile_batch_size` is the sliding-window tile micro-batch. Halo models still fall back to embedded `inference.batch_size` when `tile_batch_size` is omitted.
-- New ensembles must read these settings through `_inference_setting`, `_inference_mapping`, and `_tile_batch_size`, not from `self.config["inference"]` directly.
-
-For artery/vein models, embedded `inference.graph_refinement` is the default. `refinement_mode` and `refinement_parameters` remain supported aliases and take precedence over `graph_refinement`. Passing `refinement_mode=None` still selects basic per-pixel decoding.
-
-In `full` mode, configurable-radius junction regions expose segment ports. The optimizer scores continuation, bifurcation, overlap, and cut configurations from spline direction, thickness, vessel/crossing logits, and A/V compatibility. A mixed-integer program jointly assigns segment classes and configurations while forcing the artery and vein graphs to be acyclic rooted forests. When `disc_mask` and `bounds_mask` are supplied to `infer_artery_vein`, disc pixels are removed and roots are prioritized as disc contact, fundus-boundary fallback, then internal fallback. The inward fundus boundary width is configurable with `bounds_boundary_width`. Short components below `min_segment_size` are retained as microsegments when they connect at least two junction boundaries. Microsegments use their endpoint chord instead of a spline, cannot become roots, and must connect at every port when active. Individual evidence costs and the disc, bounds, internal, distance, and thickness root costs can be ablated independently by setting their corresponding weights or penalties to zero.
-
-Do not add logit-specific step or bulk aliases. Read logits from `predict_step_full(batch)["logits"]`; a bulk export is a short dataloader loop that restores each array to canonical geometry before writing it.
-
-### Installation
-
-1. Install torch and torchvision that match your cuda environment. For example:
-```
-pip3 install torch torchvision torchaudio  # pip and CUDA 12
-conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia # conda and CUDA 12
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # pip and CUDA 11
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia # conda and CUDA 11
-```
-
-Pytorch installation instructions are [here](https://pytorch.org/get-started/locally/).
-
-`retinalysis-inference` declares `torch>=2.4.1,<3` and `torchvision>=0.19,<1`. Install the CUDA build that matches your machine first so pip reuses it; a bare install still pulls a default PyTorch from PyPI. 
-
-2. Install rtnls_fundusprep and rtnls-inference:
-
-```
-pip install retinalysis-fundusprep
+```bash
 pip install retinalysis-inference
 ```
 
-3. Done! You can now download and use rtnls-inference ensembles. See [this notebook](./notebooks/inference.ipynb) for an example. The models are automatically downloaded from huggingface.
+For GPU use, follow the [PyTorch installation instructions](https://pytorch.org/get-started/locally/)
+to install a build suitable for your machine.
+
+## Running inference
+
+### Load a model
+
+Load a local release by its path without the file extension and choose a device:
+
+```python
+from pathlib import Path
+
+import torch
+from rtnls_inference.ensembles import make_ensemble
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+ensemble = make_ensemble("/path/to/model").to(device).eval()
+```
+
+The [example notebooks](#examples-and-further-reading) also show how to load
+pretrained VascX models from Hugging Face.
+
+### Single image
+
+Inference follows four steps:
+
+```python
+# 1. Preprocess the image.
+item = ensemble.preprocess_item({"image": "fundus.jpg"}, input_space="raw")
+
+# 2. Make a batch of one.
+batch = ensemble.make_batch([item])
+
+# 3. Run the model.
+predictions = ensemble.predict_batch(batch)
+
+# 4. Postprocess the output.
+result = ensemble.postprocess_batch(predictions, batch)[0]
+```
+
+Read the prediction from `result["output"]`. You can also pass a loaded uint8 RGB
+NumPy image or PyTorch tensor in the `image` field.
+
+Use `input_space="preprocessed"` for images that have already been through fundus
+preprocessing. Segmentation masks and keypoints refer to the preprocessed image,
+which is available in `result["preprocessed_image"]`.
+
+### Batch inference
+
+Create the input list, build a dataloader, then run inference:
+
+```python
+# 1. Create the input list.
+data = [{"image": path} for path in sorted(Path("images").glob("*.jpg"))]
+
+# 2. Create the dataloader.
+loader = ensemble.make_inference_dataloader(data, input_space="raw", batch_size=2)
+
+# 3. Run inference and save the results.
+results = ensemble.predict_dataloader(loader, dest_path="predictions")
+```
+
+- **Classification, regression and keypoints** return a DataFrame and save
+  `predictions.csv`. Omit `dest_path` to keep the results in memory only.
+- **Segmentation** saves masks as it goes and returns a table listing the output
+  files, also saved as `manifest.csv`.
+
+To process results one at a time without saving files, use
+`ensemble.iter_predictions(loader)`. The notebooks below use this for visualizing
+segmentation results.
+
+## Examples and further reading
+
+Each notebook demonstrates single-image inference and a batch visualization:
+
+- [Segmentation](notebooks/inference_segmentation.ipynb): artery/vein and vessel masks.
+- [Classification](notebooks/inference_classification.ipynb): quality labels and probabilities.
+- [Keypoint localisation](notebooks/inference_keypoints.ipynb): fovea coordinates.
+- [ONNX](notebooks/inference_onnx.ipynb): local ONNX segmentation releases.
+
+Find pretrained models on [Hugging Face](https://huggingface.co/Eyened/vascx).
+For input formats and additional options, see the method documentation in
+[the ensemble base classes](rtnls_inference/ensembles/base.py) and
+[the segmentation ensemble](rtnls_inference/ensembles/ensemble_segmentation.py).
+
+For raw logits and migrating older callers, see the short
+[inference workflow guide](docs/inference_migration.md).

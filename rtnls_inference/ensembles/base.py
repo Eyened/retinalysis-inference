@@ -1,31 +1,31 @@
 import json
-import warnings
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import lightning as L
 import numpy as np
 import pandas as pd
 import torch
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from rtnls_inference.datasets.fundus import FundusInferenceDataset
 from rtnls_inference.ensembles.onnx_backend import OnnxEnsembleBackend
+from rtnls_inference.ensembles.output_files import prepare_export, save_summary
 from rtnls_inference.ensembles.predict_output import (
-    PredictFullOutput,
-    canonical_context,
-    decollate_predict_full,
-    to_numpy,
-    validate_predict_full,
+    check_prediction_tensors,
+    unbatch_predictions,
 )
+from rtnls_inference.inputs import ImageInput, batch_ids, validate_ids
 from rtnls_inference.readers import make_mask_reader
 from rtnls_inference.release_config import update_stored_config
 from rtnls_inference.transforms import make_test_transform
-from rtnls_inference.utils import collate_except_metadata
+from rtnls_inference.utils import collate_inference_items
 
 T = TypeVar("T")
 _UNSET: Any = object()
@@ -45,8 +45,10 @@ _INFERENCE_OVERRIDE_NAMES = (
 
 
 class Ensemble(L.LightningModule):
-    predict_full_model = PredictFullOutput
     autocast_inference = False
+    # Fields retained on the inference device for postprocess_item. Inspection
+    # fields (member predictions, heatmaps, etc.) need not cross to the CPU.
+    postprocess_fields = ("aggregate",)
 
     def __init__(
         self,
@@ -167,6 +169,11 @@ class Ensemble(L.LightningModule):
     def from_huggingface(cls, modelstr: str, **kwargs):
         repo_name, repo_fpath = modelstr.split(":")
         fpath = hf_hub_download(repo_id=repo_name, filename=repo_fpath)
+        try:
+            # Trigger HF download counts; runtime settings stay embedded.
+            hf_hub_download(repo_id=repo_name, filename="config.yaml")
+        except EntryNotFoundError:
+            pass  # Older repositories may not include a root config.
         if str(fpath).endswith(".onnx"):
             return cls.from_onnx(fpath, **kwargs)
         return cls.from_torchscript(fpath, **kwargs)
@@ -208,9 +215,16 @@ class Ensemble(L.LightningModule):
         if "image" not in batch:
             raise KeyError("predict_step requires batch['image']")
         if not isinstance(batch["image"], torch.Tensor):
-            raise TypeError("batch['image'] must be a torch.Tensor")
+            raise TypeError(
+                f"batch['image'] must be a torch.Tensor, got {type(batch['image']).__name__}"
+            )
         if batch["image"].ndim != 4:
             raise ValueError(f"batch['image'] must be NCHW, got {batch['image'].shape}")
+        if any(size == 0 for size in batch["image"].shape):
+            raise ValueError(
+                f"batch['image'] dimensions must be positive, got {tuple(batch['image'].shape)}"
+            )
+        batch_ids(batch)
 
     def _model_batch(self, batch: Mapping[str, Any]) -> dict[str, Any]:
         """Move model input tensors only; leave IDs and canonical context on CPU."""
@@ -224,6 +238,17 @@ class Ensemble(L.LightningModule):
         if self.autocast_inference and device.type == "cuda":
             return torch.autocast(device_type="cuda")
         return nullcontext()
+
+    @contextmanager
+    def _inference_context(self):
+        # TorchScript CUDA compilation can use the current device even when
+        # model parameters and inputs already reside on another GPU.
+        device = self.get_device()
+        device_context = (
+            torch.cuda.device(device) if device.type == "cuda" else nullcontext()
+        )
+        with device_context, self._autocast_context():
+            yield
 
     def _predict_member_tensors(self, batch: Mapping[str, Any]) -> torch.Tensor:
         raise NotImplementedError
@@ -241,40 +266,162 @@ class Ensemble(L.LightningModule):
     ) -> tuple[int, int] | None:
         return None
 
+    def _run_prediction(self, batch):
+        model_batch = self._model_batch(batch)
+        with self._inference_context():
+            output = self._predict_step_tensors(model_batch)
+        check_prediction_tensors(output, int(batch["image"].shape[0]))
+        return model_batch, output
+
+    @staticmethod
+    def make_batch(items: Sequence[Mapping[str, Any] | None]) -> dict[str, Any]:
+        """Collate prepared CHW items; preserve metadata and skip failed inputs.
+
+        Returns an empty mapping when all items were skipped. Model inputs with
+        different shapes must be processed in separate batches.
+        """
+        return collate_inference_items(items)
+
+    @torch.no_grad()
+    def predict_batch(
+        self,
+        batch: Mapping[str, Any],
+        *,
+        fields: Literal["all"] | Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Predict once, retaining detached tensors on the inference device.
+
+        By default retain only ``postprocess_fields``. A sequence adds named
+        inspection fields (for example ``("logits",)``); ``"all"`` retains every
+        backend field. ``prediction_size`` is always included. Arrays remain at
+        model resolution: use unbatch_predictions for raw NumPy inspection or
+        postprocess_batch for final results in canonical preprocessing space.
+        """
+        if fields is not None and not (isinstance(fields, str) and fields == "all"):
+            if isinstance(fields, str) or not isinstance(fields, Sequence):
+                raise TypeError(
+                    "fields must be None, 'all', or a sequence of field names"
+                )
+            if any(not isinstance(name, str) for name in fields):
+                raise TypeError("fields must contain only string field names")
+        model_batch, output = self._run_prediction(batch)
+        if isinstance(fields, str):
+            names = list(output)
+        else:
+            names = list(dict.fromkeys((*self.postprocess_fields, *(fields or ()))))
+        missing = [
+            name for name in names if name not in output and name != "prediction_size"
+        ]
+        if missing:
+            raise ValueError(
+                f"Requested prediction fields {missing!r} are unavailable; "
+                f"available fields: {sorted((*output, 'prediction_size'))!r}"
+            )
+        result = {
+            name: output[name].detach()
+            if isinstance(output[name], torch.Tensor)
+            else output[name]
+            for name in names
+            if name != "prediction_size"
+        }
+        result["prediction_size"] = self._prediction_size(model_batch, output)
+        return result
+
+    def postprocess_batch(
+        self, predictions: Mapping[str, Any], batch: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Convert required fields and finish each prediction in canonical space.
+
+        Inspection-only tensors are not transferred to CPU. This method neither
+        runs the model nor writes files; postprocess_item defines family behavior.
+        """
+        self._require_batch(batch)
+        required = (*self.postprocess_fields, "prediction_size")
+        missing = [name for name in required if name not in predictions]
+        if missing:
+            raise ValueError(f"Missing postprocessing fields: {missing!r}")
+        retained = {name: predictions[name] for name in required}
+        return [
+            self.postprocess_item(item) for item in unbatch_predictions(retained, batch)
+        ]
+
+    def iter_predictions(self, dataloader):
+        """Yield final CPU results one at a time, retaining at most one batch.
+
+        Results include the input context needed for visualization. This method
+        never writes files; use it to consume image outputs without collecting
+        the entire dataset in memory.
+        """
+        for batch in tqdm(dataloader):
+            if not batch:
+                continue
+            predictions = self.predict_batch(batch)
+            results = self.postprocess_batch(predictions, batch)
+            del predictions
+            yield from results
+            del results, batch
+
+    prediction_prefix = "prediction"
+
+    def _prediction_columns(self, count):
+        return [f"{self.prediction_prefix}_{index}" for index in range(count)]
+
+    def _summary_columns(self, count=0):
+        count = count or self.config.get("lightningmodule", {}).get("n_class", 0)
+        return ["id", *self._prediction_columns(count)]
+
+    def _summary_row(self, item):
+        values = np.asarray(item["output"]).reshape(-1)
+        return {
+            "id": item.get("id"),
+            **dict(zip(self._prediction_columns(len(values)), values)),
+        }
+
+    def predict_dataloader(
+        self,
+        dataloader,
+        dest_path: str | Path | None = None,
+        *,
+        overwrite: bool = False,
+    ) -> pd.DataFrame:
+        """Return small final predictions as a table, optionally saving predictions.csv.
+
+        Only numeric predictions and labels are collected; input images and
+        inspection intermediates are released as batches are consumed. Spatial
+        ensembles override this method to write their outputs incrementally.
+        """
+        path = (
+            prepare_export(
+                dataloader, dest_path, "predictions.csv", overwrite=overwrite
+            )
+            if dest_path is not None
+            else None
+        )
+        rows = []
+        columns = None
+        for item in self.iter_predictions(dataloader):
+            row = self._summary_row(item)
+            if columns is None:
+                columns = list(row)
+            elif list(row) != columns:
+                raise ValueError("Prediction columns changed between inputs")
+            rows.append(row)
+        table = pd.DataFrame(
+            rows, columns=columns if columns is not None else self._summary_columns()
+        )
+        validate_ids(table["id"], for_output=path is not None)
+        if path is not None:
+            save_summary(table, path)
+        return table
+
     @torch.no_grad()
     def predict_step(
         self, batch: Mapping[str, Any], batch_idx: int | None = None
     ) -> torch.Tensor:
         """Return the member-aggregated tensor-safe prediction on its device."""
         del batch_idx
-        model_batch = self._model_batch(batch)
-        with self._autocast_context():
-            output = self._predict_step_tensors(model_batch)
-        aggregate = output["aggregate"]
-        if not isinstance(aggregate, torch.Tensor):
-            raise TypeError("_predict_step_tensors()['aggregate'] must be a tensor")
-        return aggregate.detach()
-
-    @torch.no_grad()
-    def predict_step_full(
-        self, batch: Mapping[str, Any], batch_idx: int | None = None
-    ) -> dict[str, Any]:
-        """Return validated batch-major NumPy predictions and inspection context."""
-        del batch_idx
-        self._require_batch(batch)
-        model_batch = self._model_batch(batch)
-        with self._autocast_context():
-            tensor_output = self._predict_step_tensors(model_batch)
-        output = to_numpy(tensor_output)
-        batch_size = int(np.asarray(output["aggregate"]).shape[0])
-        output.update(
-            canonical_context(
-                batch,
-                batch_size=batch_size,
-                prediction_size=self._prediction_size(model_batch, tensor_output),
-            )
-        )
-        return validate_predict_full(self.predict_full_model, output)
+        _, output = self._run_prediction(batch)
+        return output["aggregate"].detach()
 
     def postprocess_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
         """Convert one full-output item to its canonical public representation."""
@@ -288,24 +435,6 @@ class Ensemble(L.LightningModule):
         if "preprocessed_image" in item:
             result["preprocessed_image"] = item["preprocessed_image"]
         return result
-
-    def _compatibility_items(
-        self, full_output: Mapping[str, Any]
-    ) -> list[dict[str, Any]]:
-        return [
-            {"id": item.get("id"), "prediction": item["aggregate"]}
-            for item in decollate_predict_full(full_output)
-        ]
-
-    def _predict_batch(self, batch: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """Deprecated prediction-geometry adapter for legacy integrations."""
-        warnings.warn(
-            "_predict_batch is deprecated; use predict_step_full and decollate the "
-            "batch-major NumPy output",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return self._compatibility_items(self.predict_step_full(batch))
 
     def save_stored_config(
         self,
@@ -349,13 +478,73 @@ class FundusEnsemble(Ensemble):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _make_inference_dataloader(
+    @staticmethod
+    def _preprocess_input_space(input_space: str) -> bool:
+        if input_space not in {"raw", "preprocessed"}:
+            raise ValueError("input_space must be 'raw' or 'preprocessed'")
+        return input_space == "raw"
+
+    def preprocess_item(
+        self,
+        sample: ImageInput,
+        *,
+        input_space: Literal["raw", "preprocessed"] = "raw",
+    ) -> dict[str, Any]:
+        """Load and prepare one input record using the same dataset as bulk runs.
+
+        The image may be a path, RGB uint8 HWC NumPy array, or RGB uint8 CHW
+        tensor. IDs default to the filename stem for paths and are otherwise
+        optional until exporting. Other input fields remain supported
+        (input mask/contrast-enhanced paths, metadata and fov). The result is a
+        model-ready CHW CPU tensor, accompanied by canonical RGB and context.
+        Already-preprocessed inputs still receive model-specific transforms.
+        """
+        dataset = self._make_inference_dataset(
+            {"images": [sample]},
+            preprocess=self._preprocess_input_space(input_space),
+            ignore_exceptions=False,
+        )
+        return dataset[0]
+
+    def make_inference_dataloader(
+        self,
+        data: Sequence[ImageInput],
+        *,
+        input_space: Literal["raw", "preprocessed"] = "raw",
+        batch_size: int | None = None,
+        num_workers: int = 0,
+        ignore_exceptions: bool = False,
+    ) -> DataLoader:
+        """Build a lazy inference loader from input records.
+
+        Input failures raise by default. With ignore_exceptions=True the dataset
+        warns and skips loading failures; an entirely skipped batch is empty.
+        Subclasses may override this public method to constrain image batching.
+        """
+        dataset = self._make_inference_dataset(
+            {"images": list(data)},
+            preprocess=self._preprocess_input_space(input_space),
+            ignore_exceptions=ignore_exceptions,
+        )
+        if batch_size is None:
+            batch_size = self._inference_setting("batch_size", 8)
+        loader_kwargs = {
+            "batch_size": batch_size,
+            "pin_memory": self.get_device().type == "cuda",
+            "shuffle": False,
+            # A static collator keeps the GPU model out of worker processes.
+            "collate_fn": type(self).make_batch,
+            "num_workers": num_workers,
+        }
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(dataset, **loader_kwargs)
+
+    def _make_inference_dataset(
         self,
         inputs: dict,
         preprocess=True,
-        batch_size=None,
-        num_workers=8,
-        ignore_exceptions=True,
+        ignore_exceptions=False,
     ):
         datamodule_config = self.config.get("datamodule", {})
 
@@ -365,7 +554,7 @@ class FundusEnsemble(Ensemble):
         ):
             input_mask_reader = make_mask_reader(datamodule_config["input_mask_reader"])
 
-        dataset = self.inference_dataset_cls(
+        return self.inference_dataset_cls(
             data=inputs,
             transform=make_test_transform(
                 self.config["datamodule"].get("test_transform", {}),
@@ -374,110 +563,3 @@ class FundusEnsemble(Ensemble):
             ignore_exceptions=ignore_exceptions,
             input_mask_reader=input_mask_reader,
         )
-
-        if batch_size is None:
-            batch_size = self._inference_setting("batch_size", 8)
-        pin_memory = self.get_device().type == "cuda"
-        loader_kwargs: dict[str, Any] = {
-            "batch_size": batch_size,
-            "pin_memory": pin_memory,
-            "shuffle": False,
-            "collate_fn": (
-                collate_except_metadata
-                if ignore_exceptions
-                else torch.utils.data.dataloader.default_collate
-            ),
-            "num_workers": num_workers,
-        }
-        if num_workers > 0:
-            loader_kwargs["prefetch_factor"] = 2
-        return DataLoader(dataset, **loader_kwargs)
-
-    def predict_dataset(
-        self,
-        data,
-        dest_path=None,
-        num_workers=0,
-        batch_size=None,
-    ):
-        """Run inference on a dataset.
-
-        Args:
-            data: List of dicts, each containing 'id', 'image', and optionally 'contrast_enhanced'
-            dest_path: Directory to save predictions
-            num_workers: Number of dataloader workers
-            batch_size: Batch size for inference
-        """
-        inputs = {"images": data}
-        dataloader = self._make_inference_dataloader(
-            inputs,
-            num_workers=num_workers,
-            preprocess=True,
-            batch_size=batch_size,
-        )
-        return self._predict_dataloader(dataloader, dest_path)
-
-    def predict(self, *args, **kwargs):
-        """Alias for predict_dataset to maintain backward compatibility."""
-        return self.predict_dataset(*args, **kwargs)
-
-    def predict_preprocessed(
-        self,
-        data,
-        dest_path=None,
-        num_workers=0,
-        batch_size=None,
-    ):
-        """Run inference on preprocessed images.
-
-        Args:
-            data: List of dicts, each containing 'id', 'image', and optionally 'contrast_enhanced'
-            dest_path: Directory to save predictions
-            num_workers: Number of dataloader workers
-            batch_size: Batch size for inference
-        """
-        inputs = {"images": data}
-        dataloader = self._make_inference_dataloader(
-            inputs,
-            num_workers=num_workers,
-            preprocess=False,
-            batch_size=batch_size,
-        )
-        return self._predict_dataloader(dataloader, dest_path)
-
-    def predict_dataframe(
-        self,
-        df: pd.DataFrame,
-        dest_path=None,
-        image_path_column="image",
-        id_column="id",
-        preprocess=True,
-        **kwargs,
-    ):
-        """Run inference on a pandas DataFrame.
-
-        Args:
-            df: DataFrame with image paths
-            dest_path: Directory to save predictions
-            image_path_column: Column name for image paths
-            id_column: Column name for IDs (optional, will use index if not present)
-            preprocess: Whether to preprocess images
-            **kwargs: Additional arguments passed to predict methods
-        """
-        data = []
-        for idx, row in df.iterrows():
-            entry = {
-                "id": row.get(id_column, str(idx))
-                if id_column in df.columns
-                else str(idx),
-                "image": str(row[image_path_column]),
-            }
-            data.append(entry)
-
-        if preprocess:
-            return self.predict(data, dest_path, **kwargs)
-        else:
-            return self.predict_preprocessed(data, dest_path, **kwargs)
-
-    def predict_batch(self, batch):
-        pass
