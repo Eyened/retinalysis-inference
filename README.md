@@ -4,8 +4,7 @@ Run model ensembles for ophthalmic image classification, regression, segmentatio
 and keypoint localisation. The library handles preprocessing, prediction and
 postprocessing, and is used by VascX for fundus image analysis.
 
-Models can be loaded from local files or Hugging Face. You can also train your
-own models with [retinalysis-models](https://github.com/eyened/retinalysis-models).
+Models can be loaded from local files or Hugging Face.
 
 ## Installation
 
